@@ -15,6 +15,7 @@ from .models import (
     ResourceContent,
     ResourceDescriptor,
     ResourceTemplate,
+    RootDescriptor,
     SamplingMessage,
     SamplingRequest,
     SamplingResponse,
@@ -31,6 +32,28 @@ PromptHandler = Callable[[Dict[str, Any]], Awaitable[PromptRenderResult] | Promp
 
 class AsyncMCPServer:
     """Minimal asynchronous MCP server for testing capability negotiation."""
+
+    _LOG_LEVELS: Dict[str, int] = {
+        "debug": 10,
+        "info": 20,
+        "notice": 25,
+        "warning": 30,
+        "error": 40,
+        "critical": 50,
+        "alert": 60,
+        "emergency": 70,
+    }
+
+    _LOGGER_METHODS: Dict[str, str] = {
+        "debug": "debug",
+        "info": "info",
+        "notice": "info",
+        "warning": "warning",
+        "error": "error",
+        "critical": "critical",
+        "alert": "critical",
+        "emergency": "critical",
+    }
 
     def __init__(
         self,
@@ -65,6 +88,7 @@ class AsyncMCPServer:
         self._resource_subscribers: Dict[str, bool] = {}
         self._request_counter = 0
         self._pending_requests: Dict[int, asyncio.Future] = {}
+        self._log_level: str = "info"
 
         if tools:
             for definition, handler in tools:
@@ -187,6 +211,14 @@ class AsyncMCPServer:
         result = response.get("result", {})
         return SamplingResponse.from_payload(result)
 
+    async def list_client_roots(self) -> List[RootDescriptor]:
+        response = await self._send_request("roots/list", {})
+        result = response.get("result", {})
+        roots_payload = result.get("roots", [])
+        roots = [RootDescriptor.from_payload(item) for item in roots_payload]
+        self._logger.debug("Received %d root(s) from client.", len(roots))
+        return roots
+
     async def _handle_request_message(self, method: str, message: Dict[str, Any]) -> None:
         if method == "initialize":
             await self._handle_initialize(message)
@@ -206,6 +238,8 @@ class AsyncMCPServer:
             await self._handle_prompts_list(message)
         elif method == "prompts/get":
             await self._handle_prompts_get(message)
+        elif method == "logging/setLevel":
+            await self._handle_logging_set_level(message)
         elif method in {"notifications/shutdown", "client/shutdown"}:
             self._logger.debug("Shutdown notification received; exiting loop.")
             self._running = False
@@ -319,6 +353,15 @@ class AsyncMCPServer:
         }
         self._logger.debug("Tool '%s' result payload=%s", definition.name, response)
         await self._send_with_telemetry(response)
+        await self.emit_log_message(
+            "info",
+            logger_name="server.tools",
+            data={
+                "event": "tool_call",
+                "tool": definition.name,
+                "isError": result.is_error,
+            },
+        )
 
     async def _handle_resources_list(self, message: dict) -> None:
         if self._endpoint is None:
@@ -516,6 +559,11 @@ class AsyncMCPServer:
 
         self._logger.debug("Sending resource update notification: %s", notification)
         await self._send_with_telemetry(notification)
+        await self.emit_log_message(
+            "debug",
+            logger_name="server.resources",
+            data={"event": "resource_updated", "uri": uri, "title": title},
+        )
 
     async def notify_resources_list_changed(self) -> None:
         await self._send_list_changed_notification("resources")
@@ -539,6 +587,11 @@ class AsyncMCPServer:
         }
         self._logger.debug("Sending %s list_changed notification", category)
         await self._send_with_telemetry(notification)
+        await self.emit_log_message(
+            "notice",
+            logger_name="server.%s" % category,
+            data={"event": "list_changed", "category": category},
+        )
 
     async def _send_error(self, request_id: Optional[int], *, code: int, message: str) -> None:
         if self._endpoint is None:
@@ -601,3 +654,88 @@ class AsyncMCPServer:
             channel=channel,
         )
         await self._endpoint.send(payload)
+
+    async def _handle_logging_set_level(self, message: Dict[str, Any]) -> None:
+        params = message.get("params", {})
+        if not isinstance(params, dict):
+            await self._send_error(
+                message.get("id"),
+                code=-32602,
+                message="Invalid params for logging/setLevel.",
+            )
+            return
+
+        level_value = params.get("level")
+        if not isinstance(level_value, str):
+            await self._send_error(
+                message.get("id"),
+                code=-32602,
+                message="Log level must be a string.",
+            )
+            return
+
+        normalized = level_value.lower()
+        if normalized not in self._LOG_LEVELS:
+            await self._send_error(
+                message.get("id"),
+                code=-32602,
+                message=f"Unsupported log level: {level_value}",
+            )
+            return
+
+        self._log_level = normalized
+        self._logger.info("Client set minimum log level to %s", normalized)
+
+        response = {
+            "jsonrpc": "2.0",
+            "id": message.get("id"),
+            "result": {},
+        }
+        await self._send_with_telemetry(response)
+        await self.emit_log_message(
+            "notice",
+            logger_name="server.logging",
+            data={"event": "log_level_set", "level": normalized},
+        )
+
+    async def emit_log_message(
+        self,
+        level: str,
+        *,
+        logger_name: Optional[str] = None,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if self._endpoint is None:
+            return
+
+        normalized = level.lower()
+        if normalized not in self._LOG_LEVELS:
+            normalized = "info"
+
+        current_threshold = self._LOG_LEVELS.get(self._log_level, 20)
+        message_level_value = self._LOG_LEVELS[normalized]
+        if message_level_value < current_threshold:
+            return
+
+        logger_method_name = self._LOGGER_METHODS.get(normalized, "info")
+        logger_method = getattr(self._logger, logger_method_name, self._logger.info)
+        logger_method(
+            "Emitting log notification level=%s logger=%s data=%s",
+            normalized,
+            logger_name,
+            data,
+        )
+
+        payload: Dict[str, Any] = {
+            "jsonrpc": "2.0",
+            "method": "notifications/message",
+            "params": {
+                "level": normalized,
+            },
+        }
+        if logger_name is not None:
+            payload["params"]["logger"] = logger_name
+        if data:
+            payload["params"]["data"] = data
+
+        await self._send_with_telemetry(payload)

@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from .client import AsyncMCPClient
@@ -20,6 +21,7 @@ from .models import (
     ResourceContent,
     ResourceDescriptor,
     ResourceTemplate,
+    RootDescriptor,
     SamplingMessage,
     SamplingResponse,
     ServerCapabilities,
@@ -270,12 +272,23 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
     )
     client.set_sampling_provider(LocalLLMSamplingProvider())
 
+    workspace_root = Path(__file__).resolve().parent.parent
+    workspace_root_descriptor = RootDescriptor(
+        uri=workspace_root.as_uri(),
+        name=workspace_root.name or "workspace",
+    )
+    client.set_roots([workspace_root_descriptor])
+
+    client_roots: List[RootDescriptor] = []
+
     resource_updates: List[Dict[str, Any]] = []
     list_change_events: Dict[str, int] = {
         "resources": 0,
         "tools": 0,
         "prompts": 0,
+        "roots": 0,
     }
+    log_messages: List[Dict[str, Any]] = []
 
     async def on_resource_update(params: Dict[str, Any]) -> None:
         resource_updates.append(params)
@@ -302,6 +315,24 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
         "notifications/prompts/list_changed",
         lambda params: _list_changed("prompts"),
     )
+    
+    async def on_server_log(params: Dict[str, Any]) -> None:
+        payload = params if isinstance(params, dict) else {}
+        log_messages.append(payload)
+        level = payload.get("level", "info")
+        logger_name = payload.get("logger", "server")
+        data = payload.get("data") or {}
+        logger.debug(
+            "Server log notification level=%s logger=%s data=%s",
+            level,
+            logger_name,
+            data,
+        )
+
+    client.register_notification_handler(
+        "notifications/message",
+        on_server_log,
+    )
 
     server_task = asyncio.create_task(server.serve(transport.server_endpoint()))
 
@@ -309,6 +340,26 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
         await client.connect(transport.client_endpoint())
         handshake: HandshakeResult = await client.initialize()
         logger.info("Handshake complete; protocol=%s", handshake.protocol_version)
+
+        await client.set_logging_level("debug")
+
+        client_roots = await server.list_client_roots()
+        logger.info("Server observed %d workspace root(s).", len(client_roots))
+
+        logs_path = workspace_root / "logs"
+        if logs_path.exists():
+            log_root_descriptor = RootDescriptor(
+                uri=logs_path.resolve().as_uri(),
+                name=f"{workspace_root_descriptor.name} logs"
+                if workspace_root_descriptor.name
+                else "Logs",
+            )
+            if not any(root.uri == log_root_descriptor.uri for root in client_roots):
+                updated_roots = list(client_roots) + [log_root_descriptor]
+                client.set_roots(updated_roots)
+                await client.notify_roots_list_changed()
+                list_change_events["roots"] += 1
+                client_roots = await server.list_client_roots()
 
         tools = await client.list_tools()
         logger.info("Discovered %d tool(s).", len(tools))
@@ -441,6 +492,8 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
         }
         if handshake.instructions:
             payload["instructions"] = handshake.instructions
+        if client_roots:
+            payload["roots"] = [root.to_payload() for root in client_roots]
         if tool_call_result is not None:
             payload["toolCall"] = tool_call_result.to_payload()
         if resource_snippets:
@@ -459,9 +512,27 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
             payload["listChanged"] = list_change_events
         if sampling_result is not None:
             payload["sampling"] = sampling_result.to_payload()
+        if log_messages:
+            payload["logs"] = log_messages
 
         print("Handshake succeeded between ExampleClient and ExampleServer.")
         print(json.dumps(payload, indent=2, sort_keys=True))
+        if client_roots:
+            print("Workspace roots:")
+            for root in client_roots:
+                label = f" ({root.name})" if root.name else ""
+                print(f"- {root.uri}{label}")
+        if log_messages:
+            print("Server logs:")
+            for entry in log_messages:
+                level = entry.get("level", "info")
+                logger_name = entry.get("logger", "server")
+                data = entry.get("data") or {}
+                message = data.get("message") or data.get("event")
+                if message:
+                    print(f"- [{level}] {logger_name}: {message}")
+                else:
+                    print(f"- [{level}] {logger_name}: {data}")
         if tool_call_result is not None:
             text_blocks = [
                 block.text for block in tool_call_result.content if block.text

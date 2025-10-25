@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
 from . import telemetry
 from .models import (
@@ -16,6 +16,7 @@ from .models import (
     ResourceContent,
     ResourceDescriptor,
     ResourceTemplate,
+    RootDescriptor,
     SamplingRequest,
     SamplingResponse,
     ServerCapabilities,
@@ -51,9 +52,14 @@ class AsyncMCPClient:
         self._listener_task: Optional[asyncio.Task] = None
         self._logger = logging.getLogger("mcp_cli.client")
         self._notification_handlers: Dict[str, NotificationHandler] = {}
+        self._roots: List[RootDescriptor] = []
         self.register_request_handler(
             "sampling/createMessage",
             self._handle_sampling_create_message,
+        )
+        self.register_request_handler(
+            "roots/list",
+            self._handle_roots_list,
         )
         self._logger.debug(
             "Client instantiated with protocol=%s capabilities=%s",
@@ -84,6 +90,16 @@ class AsyncMCPClient:
         handler: NotificationHandler,
     ) -> None:
         self._notification_handlers[method] = handler
+
+    def set_roots(self, roots: Iterable[RootDescriptor]) -> None:
+        self._roots = list(roots)
+        self._logger.debug("Configured %d root(s)", len(self._roots))
+
+    async def notify_roots_list_changed(self) -> None:
+        await self._send_notification("notifications/roots/list_changed")
+
+    async def set_logging_level(self, level: str) -> None:
+        await self._send_request("logging/setLevel", {"level": level})
 
     def _next_request_id(self) -> int:
         self._request_counter += 1
@@ -209,6 +225,14 @@ class AsyncMCPClient:
         ]
         self._logger.debug("Received %d prompts from server.", len(prompts))
         return prompts
+
+    async def _handle_roots_list(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        self._logger.debug(
+            "Responding to roots/list with %d root(s)", len(self._roots)
+        )
+        return {
+            "roots": [root.to_payload() for root in self._roots],
+        }
 
     async def get_prompt(
         self,

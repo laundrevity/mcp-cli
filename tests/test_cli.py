@@ -49,14 +49,20 @@ def test_cli_demo_outputs_handshake_summary(monkeypatch, capsys):
     assert data["listChanged"]["resources"] >= 1
     assert data["listChanged"]["tools"] >= 1
     assert data["listChanged"]["prompts"] >= 1
+    assert data["listChanged"]["roots"] >= 1
     assert data["prompts"][0]["name"] == "summarize-resource"
     assert data["prompt"]["messages"][0]["content"]["text"].startswith("Please read")
     assert data["sampling"]["content"]["text"] == "Stubbed sampling output."
+    assert data["logs"]
+    first_log = data["logs"][0]
+    assert first_log["level"] in {"notice", "info", "debug"}
+    assert first_log.get("data", {}).get("event") == "log_level_set"
     assert "Sample tool output" in captured.out
     assert "Resource snippets:" in captured.out
     assert "Resource updates:" in captured.out
     assert "Prompt preview:" in captured.out
     assert "Sampling output:" in captured.out
+    assert "Server logs:" in captured.out
 
 
 def test_cli_default_invocation_runs_demo(monkeypatch, capsys):

@@ -410,6 +410,25 @@ class ResourceTemplate:
 
 
 @dataclass(frozen=True)
+class RootDescriptor:
+    uri: str
+    name: Optional[str] = None
+
+    def to_payload(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"uri": self.uri}
+        if self.name is not None:
+            payload["name"] = self.name
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload: Dict[str, Any]) -> "RootDescriptor":
+        return cls(
+            uri=str(payload.get("uri", "")),
+            name=payload.get("name"),
+        )
+
+
+@dataclass(frozen=True)
 class PromptArgument:
     name: str
     description: Optional[str] = None
