@@ -226,8 +226,21 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    _EventHandler.log_path = args.events.resolve() if args.events else telemetry.log_path()
-    _EventHandler.enable_live = args.events is None
+    if args.events:
+        _EventHandler.log_path = args.events.resolve()
+        _EventHandler.enable_live = False
+    else:
+        live_path = telemetry.log_path()
+        if live_path is not None:
+            _EventHandler.log_path = live_path
+            _EventHandler.enable_live = True
+        else:
+            default_path = Path("logs/events.jsonl").resolve()
+            default_path.parent.mkdir(parents=True, exist_ok=True)
+            if not default_path.exists():
+                default_path.write_text("", encoding="utf-8")
+            _EventHandler.log_path = default_path
+            _EventHandler.enable_live = False
 
     server = ThreadingHTTPServer((args.host, args.port), _EventHandler)
     print(f"MCP viewer available at http://{args.host}:{args.port}")
