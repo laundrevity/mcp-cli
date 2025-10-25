@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import textwrap
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -45,17 +46,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     demo = subparsers.add_parser(
         "demo",
-        help="Run a release-planning walkthrough showcasing MCP features.",
+        help="Run a capability-exploration walkthrough showcasing MCP features.",
     )
     demo.add_argument(
         "--instructions",
-        default="Coordinate with the client to draft a release plan and produce a summary.",
+        default="Investigate negotiated MCP capabilities and produce a capability blueprint.",
         help="Custom server instructions to include in the handshake response.",
     )
 
     parser.set_defaults(
         command="demo",
-        instructions="Coordinate with the client to draft a release plan and produce a summary.",
+        instructions="Investigate negotiated MCP capabilities and produce a capability blueprint.",
     )
     return parser
 
@@ -93,10 +94,10 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
         )
 
     resource_text = (
-        "# MCP Demo Notes\n\n"
-        "- Demonstrates handshake, tools, resources, prompts, and sampling.\n"
-        "- Resources are served from in-memory descriptors for clarity.\n"
-        "- Sampling delegates to a local llama.cpp server when available.\n"
+        "# MCP Capability Field Notes\n\n"
+        "- Illustrates how handshake, tools, resources, prompts, and sampling interlock.\n"
+        "- Highlights transport telemetry and logging for troubleshooting.\n"
+        "- Showcases client-led capabilities such as roots, sampling, and elicitation.\n"
     )
     resource_descriptor = ResourceDescriptor(
         uri="memory:///guides/demo-notes",
@@ -114,11 +115,11 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
     )
 
     checklist_text = (
-        "## CLI Checklist\n\n"
-        "1. Initialize handshake.\n"
-        "2. List and exercise tools.\n"
-        "3. Enumerate resources and prompts.\n"
-        "4. Delegate sampling to local LLM.\n"
+        "## Capability Checklist\n\n"
+        "1. Inspect negotiated handshake data.\n"
+        "2. Probe resource subscriptions and updates.\n"
+        "3. Capture telemetry-driven insights.\n"
+        "4. Compose a capability blueprint informed by elicitation.\n"
     )
     checklist_descriptor = ResourceDescriptor(
         uri="memory:///guides/checklist",
@@ -136,71 +137,44 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
     )
     base_checklist_text = checklist_text
     elicited_context: Dict[str, str] = {
-        "objective": "Deliver a compelling MCP CLI beta walkthrough.",
-        "stakeholder": "MCP Working Group",
-        "timeline": "Beta release window",
+        "domain": "Cross-tool prototyping",
+        "goal": "Demonstrate negotiated MCP capability orchestration.",
+        "success_metric": "Blueprint with concrete follow-up experiments.",
     }
 
-    def _normalize_tasks() -> List[str]:
-        tasks: List[str] = []
-        for line in base_checklist_text.splitlines():
-            line = line.strip()
-            if line and line[0].isdigit() and "." in line:
-                _, task = line.split(".", 1)
-                tasks.append(task.strip())
-        if not tasks:
-            tasks = [
-                "Verify MCP handshake and capability negotiation",
-                "Run tools/resources/prompts demo",
-                "Capture demo transcript for release notes",
-            ]
-        return tasks
+    journal_descriptor = ResourceDescriptor(
+        uri="memory:///reports/capability-journal",
+        name="capability-journal.md",
+        title="Capability Journal",
+        description="LLM-generated notes captured during the demo run.",
+        mime_type="text/markdown",
+    )
+    journal_content = ResourceContent(
+        uri=journal_descriptor.uri,
+        name=journal_descriptor.name,
+        title=journal_descriptor.title,
+        mime_type=journal_descriptor.mime_type,
+        text="# Capability Journal\n\n(Waiting for elicitation input.)",
+    )
+    journal_entries: List[str] = []
 
-    plan_definition = ToolDefinition(
-        name="draft_release_plan",
-        title="Draft Release Plan",
-        description="Generate a release plan derived from the checklist resource.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "milestone": {
-                    "type": "string",
-                    "description": "Milestone name to anchor the plan.",
-                },
-                "audience": {
-                    "type": "string",
-                    "description": "Primary audience for the release plan.",
-                },
-            },
-            "required": ["milestone"],
-        },
+    def render_capability_notes() -> str:
+        lines = ["### Capability Summary"]
+        for key, label in (
+            ("domain", "Exploration domain"),
+            ("goal", "Primary goal"),
+            ("success_metric", "Success metric"),
+        ):
+            value = elicited_context.get(key)
+            if value:
+                lines.append(f"- {label}: {value}")
+        return "\n".join(lines)
+
+    checklist_content.text = (
+        f"{base_checklist_text}\n\n{render_capability_notes()}"
     )
 
-    async def plan_handler(arguments: Dict[str, Any]) -> ToolCallResult:
-        milestone = str(arguments.get("milestone", "MCP CLI Demo Release"))
-        audience = str(arguments.get("audience", "contributors"))
-        tasks = _normalize_tasks()
-        plan_lines = []
-        objective = elicited_context.get("objective")
-        if objective:
-            plan_lines.append(f"- Objective: {objective}")
-        stakeholder = elicited_context.get("stakeholder")
-        if stakeholder:
-            plan_lines.append(f"- Coordinate with {stakeholder} as release sponsor")
-        plan_lines.append(f"- Align {audience} on {tasks[0].lower()}")
-        if len(tasks) > 1:
-            plan_lines.append(f"- Execute: {tasks[1]}")
-        if len(tasks) > 2:
-            plan_lines.append(f"- Wrap up with: {tasks[2]}")
-        plan_lines.append("- Publish release summary and next steps")
-        plan_body = "\n".join(plan_lines)
-        plan_text = f"Milestone: {milestone}\n{plan_body}"
-        checklist_content.text = f"{base_checklist_text}\n\n### Release Plan\n{plan_text}"
-        logger.info("Drafted release plan for milestone=%s", milestone)
-        return ToolCallResult(
-            content=[ContentBlock(type="text", text=plan_text)],
-            is_error=False,
-        )
+    # Echo tool stays minimal and demonstrates tool invocation without bespoke handlers.
 
     template = ResourceTemplate(
         uri_template="memory:///releases/{version}",
@@ -213,6 +187,7 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
     resource_map = {
         resource_descriptor.uri: resource_content,
         checklist_descriptor.uri: checklist_content,
+        journal_descriptor.uri: journal_content,
     }
 
     summarize_prompt = PromptDefinition(
@@ -248,32 +223,31 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
 
     async def handle_elicitation(request: ElicitationRequest) -> ElicitationResponse:
         properties = (request.requested_schema or {}).get("properties", {})
-        response_content: Dict[str, Any] = {}
+        if request.message:
+            print(f"Elicitation request: {request.message}")
 
-        if "objective" in properties:
-            response_content["objective"] = (
-                instructions
-                or "Deliver a cohesive MCP CLI release experience with sampling support."
-            )
-        if "stakeholder" in properties:
-            response_content["stakeholder"] = "Release Captain (MCP WG)"
-        if "timeline" in properties:
-            response_content["timeline"] = "Beta launch week"
-        if "notes" in properties:
-            response_content["notes"] = (
-                "Ensure resource subscriptions trigger updates before publication."
-            )
+        responses: Dict[str, Any] = {}
+        for key, schema in properties.items():
+            description = schema.get("description") or f"Provide value for '{key}'"
+            prompt_text = f"{description}\n> "
+            user_value = input(prompt_text).strip()
+            if user_value:
+                responses[key] = user_value
 
-        if response_content:
-            elicited_context.update(
-                {key: str(value) for key, value in response_content.items()}
-            )
+        if not responses:
+            logger.info("Elicitation skipped; no responses captured.")
+            return ElicitationResponse(action="decline")
+
+        elicited_context.update({key: str(value) for key, value in responses.items()})
+        checklist_content.text = (
+            f"{base_checklist_text}\n\n{render_capability_notes()}"
+        )
 
         logger.info(
             "Responding to elicitation request with action=accept fields=%s",
-            list(response_content.keys()),
+            list(responses.keys()),
         )
-        return ElicitationResponse(action="accept", content=response_content or None)
+        return ElicitationResponse(action="accept", content=responses)
 
     server = AsyncMCPServer(
         capabilities=ServerCapabilities(
@@ -290,11 +264,11 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
         instructions=instructions,
         tools=[
             (echo_definition, echo_handler),
-            (plan_definition, plan_handler),
         ],
         resources=[
             (resource_descriptor, resource_content),
             (checklist_descriptor, checklist_content),
+            (journal_descriptor, journal_content),
         ],
         prompts=[(summarize_prompt, summarize_prompt_handler)],
         resource_templates=[template],
@@ -387,24 +361,24 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
         await client.set_logging_level("debug")
 
         elicitation_result = await server.request_elicitation(
-            message="Before drafting the release plan, provide the launch objective and primary stakeholder.",
+            message="Share the domain, goal, and success metric that should steer this MCP capability experiment.",
             requested_schema={
                 "type": "object",
                 "properties": {
-                    "objective": {
+                    "domain": {
                         "type": "string",
-                        "description": "High-level release objective",
+                        "description": "Where should the capability exploration be applied?",
                     },
-                    "stakeholder": {
+                    "goal": {
                         "type": "string",
-                        "description": "Primary release stakeholder",
+                        "description": "What outcome should the blueprint aim for?",
                     },
-                    "timeline": {
+                    "success_metric": {
                         "type": "string",
-                        "description": "Expected release window",
+                        "description": "How will we measure success?",
                     },
                 },
-                "required": ["objective"],
+                "required": ["domain"],
             },
         )
         if (
@@ -454,6 +428,76 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
                 snippet = (contents[0].text or "").strip()
             resource_snippets[descriptor.uri] = snippet
 
+        async def append_journal_entry(title: str, body: str) -> None:
+            cleaned = body.strip() or "(no content recorded)"
+            journal_entries.append(f"## {title}\n{cleaned}")
+            journal_content.text = "# Capability Journal\n\n" + "\n\n".join(journal_entries)
+            resource_snippets[journal_descriptor.uri] = journal_content.text.strip()
+            await server.notify_resource_updated(
+                journal_descriptor.uri,
+                title=journal_descriptor.title,
+            )
+
+        async def capture_sampling_note(
+            title: str,
+            prompt_text: str,
+            *,
+            fallback: str,
+        ) -> SamplingResponse:
+            logger.info("Requesting sampling note '%s'", title)
+            try:
+                result = await server.request_sampling(
+                    messages=[
+                        SamplingMessage(
+                            role="user",
+                            content=ContentBlock(type="text", text=prompt_text),
+                        )
+                    ],
+                    system_prompt=(
+                        "You are an MCP capability analyst summarizing negotiated "
+                        "features and proposing follow-up explorations."
+                    ),
+                    max_tokens=220,
+                )
+                content_text = result.content.text or ""
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Sampling note '%s' failed: %s", title, exc)
+                content_text = fallback
+                result = SamplingResponse(
+                    role="assistant",
+                    content=ContentBlock(type="text", text=content_text),
+                    model="cli-fallback",
+                    stop_reason="synthetic",
+                )
+            await append_journal_entry(title, content_text)
+            return result
+
+        handshake_overview = textwrap.dedent(
+            f"""Instructions: {handshake.instructions or 'None'}
+Client capabilities: {json.dumps(handshake.client_capabilities.to_payload(), indent=2)}
+Server capabilities: {json.dumps(handshake.server_capabilities.to_payload(), indent=2)}
+Roots subscribed: {', '.join(root.uri for root in client_roots) if client_roots else 'None'}
+"""
+        )
+        resource_catalogue = "\n".join(
+            f"- {uri}: {(resource_snippets.get(uri, '')[:120])}"
+            for uri in resource_snippets
+        )
+        await capture_sampling_note(
+            "Capability opportunities",
+            textwrap.dedent(
+                f"""Analyze the current MCP session and enumerate the most promising capability probes to attempt next.
+
+Handshake snapshot:
+{handshake_overview}
+
+Resource catalogue:
+{resource_catalogue}
+"""
+            ),
+            fallback="Document capability opportunities manually based on handshake data.",
+        )
+
         prompts = await client.list_prompts()
         logger.info("Discovered %d prompt(s).", len(prompts))
 
@@ -461,33 +505,29 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
         logger.info("Discovered %d resource template(s).", len(resource_templates))
 
         tool_call_result: Optional[ToolCallResult] = None
-        plan_text = ""
-        plan_tool_name = "draft_release_plan"
-        if plan_tool_name in tools_by_name:
-            logger.info("Calling demo tool '%s'.", plan_tool_name)
-            plan_arguments = {"milestone": "MCP CLI Beta", "audience": "contributors"}
-            tool_call_result = await client.call_tool(plan_tool_name, plan_arguments)
-            plan_text = "\n".join(
-                block.text for block in tool_call_result.content if block.text
-            ).strip()
-            await server.notify_resource_updated(
-                checklist_descriptor.uri,
-                title=checklist_descriptor.title,
-            )
-            await server.notify_tools_list_changed()
-            await asyncio.sleep(0)
-            updated_contents = await client.read_resource(checklist_descriptor.uri)
-            if updated_contents:
-                resource_snippets[checklist_descriptor.uri] = (
-                    updated_contents[0].text or ""
-                ).strip()
-        elif tools:
-            fallback_tool = tools[0]
-            logger.info("Fallback tool '%s' invoked.", fallback_tool.name)
+        if "echo" in tools_by_name:
+            echo_message = " | ".join(
+                f"{key}={value}"
+                for key, value in elicited_context.items()
+                if value
+            ) or "No elicitation context captured"
+            logger.info("Calling echo tool with elicited context snapshot.")
             tool_call_result = await client.call_tool(
-                fallback_tool.name,
-                {"message": "Fallback demo invocation."},
+                "echo",
+                {"message": f"MCP capabilities anchored in: {echo_message}"},
             )
+
+        await server.notify_resource_updated(
+            checklist_descriptor.uri,
+            title=checklist_descriptor.title,
+        )
+        await server.notify_tools_list_changed()
+        await asyncio.sleep(0)
+        updated_contents = await client.read_resource(checklist_descriptor.uri)
+        if updated_contents:
+            resource_snippets[checklist_descriptor.uri] = (
+                updated_contents[0].text or ""
+            ).strip()
 
         prompt_result = None
         if prompts:
@@ -500,59 +540,27 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
         else:
             logger.warning("No prompts available to render.")
 
-        summary_request_text = (
-            "Produce an executive release summary combining the draft plan and "
-            "resource insights.\n\n"
-            f"Draft plan:\n{plan_text or 'Plan unavailable.'}\n\n"
-            "Resource snapshots:\n"
-            f"- Notes: {resource_snippets.get(resource_descriptor.uri, '')[:160]}\n"
-            f"- Checklist: {resource_snippets.get(checklist_descriptor.uri, '')[:160]}"
+        context_outline = render_capability_notes()
+
+        sampling_result = await capture_sampling_note(
+            "Next experiments",
+            textwrap.dedent(
+                f"""You are compiling next-step experiments for the MCP capability exploration.
+
+Current journal entries:
+{journal_content.text}
+
+Latest echo output:
+{(tool_call_result.content[0].text if tool_call_result and tool_call_result.content else 'Echo not invoked.')}
+
+Recent server log notifications:
+{json.dumps(log_messages, indent=2)}
+
+Please propose concrete next experiments, referencing which negotiated capabilities should be exercised next and why.
+"""
+            ),
+            fallback="Review journal and logs manually to determine next experiments.",
         )
-
-        sampling_result = None
-        try:
-            sampling_result = await server.request_sampling(
-                messages=[
-                    SamplingMessage(
-                        role="user",
-                        content=ContentBlock(
-                            type="text",
-                            text=summary_request_text,
-                        ),
-                    )
-                ],
-                system_prompt="You are an assistant running locally via MCP sampling delegation.",
-                max_tokens=160,
-            )
-            logger.info(
-                "Received sampling response with stop_reason=%s",
-                sampling_result.stop_reason,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Sampling request failed: %s", exc)
-
-        if (
-            plan_text
-            and (
-                sampling_result is None
-                or not sampling_result.content.text
-                or sampling_result.content.text.startswith("[sampling error]")
-            )
-        ):
-            sampling_result = SamplingResponse(
-                role="assistant",
-                content=ContentBlock(
-                    type="text",
-                    text=(
-                        "Release brief for MCP CLI Beta:\n"
-                        f"- Plan outline:\n{plan_text}\n"
-                        "- Resources refreshed via MCP subscription notifications.\n"
-                        "- Prompts available for ad-hoc summaries."
-                    ),
-                ),
-                model="cli-fallback",
-                stop_reason="synthetic",
-            )
 
         await server.notify_resources_list_changed()
         await server.notify_prompts_list_changed()
