@@ -16,6 +16,7 @@ from .models import (
     ResourceDescriptor,
     ResourceTemplate,
     RootDescriptor,
+    ElicitationResponse,
     SamplingMessage,
     SamplingRequest,
     SamplingResponse,
@@ -218,6 +219,32 @@ class AsyncMCPServer:
         roots = [RootDescriptor.from_payload(item) for item in roots_payload]
         self._logger.debug("Received %d root(s) from client.", len(roots))
         return roots
+
+    async def request_elicitation(
+        self,
+        *,
+        message: str,
+        requested_schema: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> ElicitationResponse:
+        params: Dict[str, Any] = {"message": message}
+        if requested_schema is not None:
+            params["requestedSchema"] = requested_schema
+        if metadata is not None:
+            params["metadata"] = metadata
+
+        response = await self._send_request("elicitation/create", params)
+        result = response.get("result", {})
+        elicitation = ElicitationResponse.from_payload(result)
+        await self.emit_log_message(
+            "info",
+            logger_name="server.elicitation",
+            data={
+                "event": "elicitation_completed",
+                "action": elicitation.action,
+            },
+        )
+        return elicitation
 
     async def _handle_request_message(self, method: str, message: Dict[str, Any]) -> None:
         if method == "initialize":

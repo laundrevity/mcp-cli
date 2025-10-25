@@ -429,6 +429,40 @@ class RootDescriptor:
 
 
 @dataclass(frozen=True)
+class ElicitationRequest:
+    message: Optional[str] = None
+    requested_schema: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def from_payload(cls, payload: Dict[str, Any]) -> "ElicitationRequest":
+        return cls(
+            message=payload.get("message"),
+            requested_schema=payload.get("requestedSchema"),
+            metadata=payload.get("metadata"),
+        )
+
+
+@dataclass(frozen=True)
+class ElicitationResponse:
+    action: str
+    content: Optional[Dict[str, Any]] = None
+
+    def to_payload(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"action": self.action}
+        if self.content is not None:
+            payload["content"] = self.content
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload: Dict[str, Any]) -> "ElicitationResponse":
+        return cls(
+            action=str(payload.get("action", "cancel")),
+            content=payload.get("content"),
+        )
+
+
+@dataclass(frozen=True)
 class PromptArgument:
     name: str
     description: Optional[str] = None

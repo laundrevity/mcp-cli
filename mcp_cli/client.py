@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
@@ -11,6 +12,8 @@ from .models import (
     ClientInfo,
     ContentBlock,
     HandshakeResult,
+    ElicitationRequest,
+    ElicitationResponse,
     PromptDefinition,
     PromptRenderResult,
     ResourceContent,
@@ -29,6 +32,7 @@ from .transport import TransportClosed, TransportEndpoint
 
 RequestHandler = Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]
 NotificationHandler = Callable[[Dict[str, Any]], Awaitable[None] | None]
+ElicitationHandler = Callable[[ElicitationRequest], Awaitable[ElicitationResponse] | ElicitationResponse]
 
 
 class AsyncMCPClient:
@@ -53,6 +57,7 @@ class AsyncMCPClient:
         self._logger = logging.getLogger("mcp_cli.client")
         self._notification_handlers: Dict[str, NotificationHandler] = {}
         self._roots: List[RootDescriptor] = []
+        self._elicitation_handler: Optional[ElicitationHandler] = None
         self.register_request_handler(
             "sampling/createMessage",
             self._handle_sampling_create_message,
@@ -60,6 +65,10 @@ class AsyncMCPClient:
         self.register_request_handler(
             "roots/list",
             self._handle_roots_list,
+        )
+        self.register_request_handler(
+            "elicitation/create",
+            self._handle_elicitation_create,
         )
         self._logger.debug(
             "Client instantiated with protocol=%s capabilities=%s",
@@ -100,6 +109,9 @@ class AsyncMCPClient:
 
     async def set_logging_level(self, level: str) -> None:
         await self._send_request("logging/setLevel", {"level": level})
+
+    def set_elicitation_handler(self, handler: ElicitationHandler) -> None:
+        self._elicitation_handler = handler
 
     def _next_request_id(self) -> int:
         self._request_counter += 1
@@ -505,3 +517,30 @@ class AsyncMCPClient:
             )
 
         return sampling_response.to_payload()
+
+    async def _handle_elicitation_create(
+        self,
+        params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        request = ElicitationRequest.from_payload(params)
+        self._logger.debug(
+            "Handling elicitation/create message=%s schema_keys=%s",
+            request.message,
+            list((request.requested_schema or {}).get("properties", {}).keys()),
+        )
+
+        if self._elicitation_handler is None:
+            self._logger.info("No elicitation handler configured; declining request.")
+            return {"action": "decline"}
+
+        try:
+            result = self._elicitation_handler(request)
+            if inspect.isawaitable(result):
+                result = await result
+            if not isinstance(result, ElicitationResponse):
+                raise TypeError("Elicitation handler must return ElicitationResponse")
+        except Exception as exc:  # noqa: BLE001
+            self._logger.exception("Elicitation handler failed: %s", exc)
+            return {"action": "cancel"}
+
+        return result.to_payload()

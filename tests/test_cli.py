@@ -57,12 +57,15 @@ def test_cli_demo_outputs_handshake_summary(monkeypatch, capsys):
     first_log = data["logs"][0]
     assert first_log["level"] in {"notice", "info", "debug"}
     assert first_log.get("data", {}).get("event") == "log_level_set"
+    assert data["elicitation"]["action"] == "accept"
+    assert data["elicitation"]["content"]["objective"]
     assert "Sample tool output" in captured.out
     assert "Resource snippets:" in captured.out
     assert "Resource updates:" in captured.out
     assert "Prompt preview:" in captured.out
     assert "Sampling output:" in captured.out
     assert "Server logs:" in captured.out
+    assert "Elicitation response:" in captured.out
 
 
 def test_cli_default_invocation_runs_demo(monkeypatch, capsys):

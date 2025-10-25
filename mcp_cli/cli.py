@@ -15,6 +15,8 @@ from .models import (
     ClientInfo,
     ContentBlock,
     HandshakeResult,
+    ElicitationRequest,
+    ElicitationResponse,
     PromptArgument,
     PromptDefinition,
     PromptRenderResult,
@@ -133,6 +135,11 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
         text=checklist_text,
     )
     base_checklist_text = checklist_text
+    elicited_context: Dict[str, str] = {
+        "objective": "Deliver a compelling MCP CLI beta walkthrough.",
+        "stakeholder": "MCP Working Group",
+        "timeline": "Beta release window",
+    }
 
     def _normalize_tasks() -> List[str]:
         tasks: List[str] = []
@@ -173,9 +180,14 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
         milestone = str(arguments.get("milestone", "MCP CLI Demo Release"))
         audience = str(arguments.get("audience", "contributors"))
         tasks = _normalize_tasks()
-        plan_lines = [
-            f"- Align {audience} on {tasks[0].lower()}",
-        ]
+        plan_lines = []
+        objective = elicited_context.get("objective")
+        if objective:
+            plan_lines.append(f"- Objective: {objective}")
+        stakeholder = elicited_context.get("stakeholder")
+        if stakeholder:
+            plan_lines.append(f"- Coordinate with {stakeholder} as release sponsor")
+        plan_lines.append(f"- Align {audience} on {tasks[0].lower()}")
         if len(tasks) > 1:
             plan_lines.append(f"- Execute: {tasks[1]}")
         if len(tasks) > 2:
@@ -234,6 +246,35 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
             ],
         )
 
+    async def handle_elicitation(request: ElicitationRequest) -> ElicitationResponse:
+        properties = (request.requested_schema or {}).get("properties", {})
+        response_content: Dict[str, Any] = {}
+
+        if "objective" in properties:
+            response_content["objective"] = (
+                instructions
+                or "Deliver a cohesive MCP CLI release experience with sampling support."
+            )
+        if "stakeholder" in properties:
+            response_content["stakeholder"] = "Release Captain (MCP WG)"
+        if "timeline" in properties:
+            response_content["timeline"] = "Beta launch week"
+        if "notes" in properties:
+            response_content["notes"] = (
+                "Ensure resource subscriptions trigger updates before publication."
+            )
+
+        if response_content:
+            elicited_context.update(
+                {key: str(value) for key, value in response_content.items()}
+            )
+
+        logger.info(
+            "Responding to elicitation request with action=accept fields=%s",
+            list(response_content.keys()),
+        )
+        return ElicitationResponse(action="accept", content=response_content or None)
+
     server = AsyncMCPServer(
         capabilities=ServerCapabilities(
             logging={},
@@ -271,6 +312,7 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
         ),
     )
     client.set_sampling_provider(LocalLLMSamplingProvider())
+    client.set_elicitation_handler(handle_elicitation)
 
     workspace_root = Path(__file__).resolve().parent.parent
     workspace_root_descriptor = RootDescriptor(
@@ -280,6 +322,7 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
     client.set_roots([workspace_root_descriptor])
 
     client_roots: List[RootDescriptor] = []
+    elicitation_result: Optional[ElicitationResponse] = None
 
     resource_updates: List[Dict[str, Any]] = []
     list_change_events: Dict[str, int] = {
@@ -342,6 +385,40 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
         logger.info("Handshake complete; protocol=%s", handshake.protocol_version)
 
         await client.set_logging_level("debug")
+
+        elicitation_result = await server.request_elicitation(
+            message="Before drafting the release plan, provide the launch objective and primary stakeholder.",
+            requested_schema={
+                "type": "object",
+                "properties": {
+                    "objective": {
+                        "type": "string",
+                        "description": "High-level release objective",
+                    },
+                    "stakeholder": {
+                        "type": "string",
+                        "description": "Primary release stakeholder",
+                    },
+                    "timeline": {
+                        "type": "string",
+                        "description": "Expected release window",
+                    },
+                },
+                "required": ["objective"],
+            },
+        )
+        if (
+            elicitation_result.action == "accept"
+            and elicitation_result.content
+        ):
+            elicited_context.update(
+                {k: str(v) for k, v in elicitation_result.content.items()}
+            )
+        else:
+            logger.info(
+                "Elicitation returned action=%s; using default context.",
+                elicitation_result.action,
+            )
 
         client_roots = await server.list_client_roots()
         logger.info("Server observed %d workspace root(s).", len(client_roots))
@@ -514,6 +591,8 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
             payload["sampling"] = sampling_result.to_payload()
         if log_messages:
             payload["logs"] = log_messages
+        if elicitation_result is not None:
+            payload["elicitation"] = elicitation_result.to_payload()
 
         print("Handshake succeeded between ExampleClient and ExampleServer.")
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -533,6 +612,13 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
                     print(f"- [{level}] {logger_name}: {message}")
                 else:
                     print(f"- [{level}] {logger_name}: {data}")
+        if elicitation_result is not None:
+            print("Elicitation response:")
+            if elicitation_result.content:
+                for key, value in elicitation_result.content.items():
+                    print(f"- {key}: {value}")
+            else:
+                print(f"- action: {elicitation_result.action}")
         if tool_call_result is not None:
             text_blocks = [
                 block.text for block in tool_call_result.content if block.text
