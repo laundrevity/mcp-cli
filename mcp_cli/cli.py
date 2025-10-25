@@ -25,6 +25,7 @@ from .models import (
     ResourceDescriptor,
     ResourceTemplate,
     RootDescriptor,
+    SamplingRequest,
     SamplingMessage,
     SamplingResponse,
     ServerCapabilities,
@@ -176,6 +177,59 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
 
     # Echo tool stays minimal and demonstrates tool invocation without bespoke handlers.
 
+    async def auto_complete_elicitation(
+        request: ElicitationRequest,
+        missing_keys: List[str],
+        provided: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        provider = getattr(client, "_sampling_provider", None)
+        if provider is None:
+            logger.info("Sampling provider unavailable; using placeholder auto responses.")
+            return {key: provided.get(key, f"[auto] {key}") for key in missing_keys}
+
+        prompt = textwrap.dedent(
+            f"""You are assisting with Model Context Protocol elicitation.
+
+Original request: {request.message or 'n/a'}
+Fields needing values: {', '.join(missing_keys) or 'none'}
+Fields already provided: {json.dumps(provided, ensure_ascii=False)}
+
+Return a JSON object containing only the requested field names and string values.
+"""
+        )
+
+        try:
+            sampling_response = await provider.create_message(
+                SamplingRequest(
+                    messages=[
+                        SamplingMessage(
+                            role="user",
+                            content=ContentBlock(type="text", text=prompt),
+                        )
+                    ],
+                    system_prompt="Respond strictly with a JSON object of key/value pairs.",
+                    max_tokens=160,
+                )
+            )
+            raw_text = sampling_response.content.text or ""
+            payload = json.loads(raw_text)
+            logger.debug("Auto elicitation payload=%s", payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Auto elicitation failed to parse: %s", exc)
+            payload = {}
+
+        suggestions: Dict[str, Any] = {}
+        for key in missing_keys:
+            value = ""
+            if isinstance(payload, dict):
+                value = payload.get(key)
+            if value:
+                suggestions[key] = str(value)
+            else:
+                suggestions[key] = provided.get(key, f"[auto] {key}")
+
+        return suggestions
+
     template = ResourceTemplate(
         uri_template="memory:///releases/{version}",
         name="release-notes",
@@ -226,28 +280,44 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
         if request.message:
             print(f"Elicitation request: {request.message}")
 
-        responses: Dict[str, Any] = {}
+        manual_responses: Dict[str, Any] = {}
+        remaining_keys: List[str] = []
+
         for key, schema in properties.items():
             description = schema.get("description") or f"Provide value for '{key}'"
-            prompt_text = f"{description}\n> "
+            prompt_text = (
+                f"{description}\n"
+                "Press Enter to let the local model suggest a value.\n> "
+            )
             user_value = input(prompt_text).strip()
             if user_value:
-                responses[key] = user_value
+                manual_responses[key] = user_value
+            else:
+                remaining_keys.append(key)
 
-        if not responses:
+        auto_responses: Dict[str, Any] = {}
+        if remaining_keys:
+            auto_responses = await auto_complete_elicitation(
+                request,
+                remaining_keys,
+                manual_responses,
+            )
+
+        combined = {**auto_responses, **manual_responses}
+        if not combined:
             logger.info("Elicitation skipped; no responses captured.")
             return ElicitationResponse(action="decline")
 
-        elicited_context.update({key: str(value) for key, value in responses.items()})
+        elicited_context.update({key: str(value) for key, value in combined.items()})
         checklist_content.text = (
             f"{base_checklist_text}\n\n{render_capability_notes()}"
         )
 
         logger.info(
             "Responding to elicitation request with action=accept fields=%s",
-            list(responses.keys()),
+            list(combined.keys()),
         )
-        return ElicitationResponse(action="accept", content=responses)
+        return ElicitationResponse(action="accept", content=combined)
 
     server = AsyncMCPServer(
         capabilities=ServerCapabilities(
@@ -472,6 +542,12 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
             await append_journal_entry(title, content_text)
             return result
 
+        prompts = await client.list_prompts()
+        logger.info("Discovered %d prompt(s).", len(prompts))
+
+        resource_templates = await client.list_resource_templates()
+        logger.info("Discovered %d resource template(s).", len(resource_templates))
+
         handshake_overview = textwrap.dedent(
             f"""Instructions: {handshake.instructions or 'None'}
 Client capabilities: {json.dumps(handshake.client_capabilities.to_payload(), indent=2)}
@@ -479,30 +555,45 @@ Server capabilities: {json.dumps(handshake.server_capabilities.to_payload(), ind
 Roots subscribed: {', '.join(root.uri for root in client_roots) if client_roots else 'None'}
 """
         )
-        resource_catalogue = "\n".join(
-            f"- {uri}: {(resource_snippets.get(uri, '')[:120])}"
-            for uri in resource_snippets
-        )
-        await capture_sampling_note(
-            "Capability opportunities",
-            textwrap.dedent(
-                f"""Analyze the current MCP session and enumerate the most promising capability probes to attempt next.
+
+        iteration_results: List[SamplingResponse] = []
+        for iteration in range(1, 3):
+            resource_catalogue = "\n".join(
+                f"- {uri}: {(resource_snippets.get(uri, '')[:120])}"
+                for uri in resource_snippets
+            )
+            recent_logs = json.dumps(log_messages[-5:], indent=2) if log_messages else "(no logs yet)"
+            prompt_text = textwrap.dedent(
+                f"""Iteration {iteration}: recommend the next capability refinement.
+
+Current context summary:
+{render_capability_notes()}
 
 Handshake snapshot:
 {handshake_overview}
 
 Resource catalogue:
 {resource_catalogue}
+
+Latest journal entries:
+{journal_content.text}
+
+Recent server logs (up to 5):
+{recent_logs}
+
+Give a concise recommendation and rationale.
 """
-            ),
-            fallback="Document capability opportunities manually based on handshake data.",
-        )
+            )
+            fallback = f"Iteration {iteration}: inspect resources and revisit sampling manually."
+            iteration_results.append(
+                await capture_sampling_note(
+                    f"Iteration {iteration} refinement",
+                    prompt_text,
+                    fallback=fallback,
+                )
+            )
 
-        prompts = await client.list_prompts()
-        logger.info("Discovered %d prompt(s).", len(prompts))
-
-        resource_templates = await client.list_resource_templates()
-        logger.info("Discovered %d resource template(s).", len(resource_templates))
+        sampling_result = iteration_results[-1] if iteration_results else None
 
         tool_call_result: Optional[ToolCallResult] = None
         if "echo" in tools_by_name:
@@ -539,28 +630,6 @@ Resource catalogue:
             prompt_result = await client.get_prompt(prompt_name, prompt_args)
         else:
             logger.warning("No prompts available to render.")
-
-        context_outline = render_capability_notes()
-
-        sampling_result = await capture_sampling_note(
-            "Next experiments",
-            textwrap.dedent(
-                f"""You are compiling next-step experiments for the MCP capability exploration.
-
-Current journal entries:
-{journal_content.text}
-
-Latest echo output:
-{(tool_call_result.content[0].text if tool_call_result and tool_call_result.content else 'Echo not invoked.')}
-
-Recent server log notifications:
-{json.dumps(log_messages, indent=2)}
-
-Please propose concrete next experiments, referencing which negotiated capabilities should be exercised next and why.
-"""
-            ),
-            fallback="Review journal and logs manually to determine next experiments.",
-        )
 
         await server.notify_resources_list_changed()
         await server.notify_prompts_list_changed()

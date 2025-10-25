@@ -11,15 +11,27 @@ def _extract_json(output: str) -> dict:
     return json.loads(json_text)
 
 
-def _patch_sampling_provider(monkeypatch):
+def _patch_sampling_provider(monkeypatch, responses=None):
+    payloads = list(responses or ["Stubbed sampling output."])
+
     class _StubProvider:
+        def __init__(self) -> None:
+            self._responses = list(payloads)
+
         async def create_message(self, request: SamplingRequest) -> SamplingResponse:
+            if self._responses:
+                content_value = self._responses.pop(0)
+            else:
+                content_value = "Stubbed sampling output."
+
+            if isinstance(content_value, dict):
+                text = json.dumps(content_value)
+            else:
+                text = str(content_value)
+
             return SamplingResponse(
                 role="assistant",
-                content=ContentBlock(
-                    type="text",
-                    text="Stubbed sampling output.",
-                ),
+                content=ContentBlock(type="text", text=text),
                 model="stub-cli",
                 stop_reason="endTurn",
             )
@@ -40,7 +52,10 @@ def _patch_elicitation_inputs(monkeypatch, values):
 
 
 def test_cli_demo_outputs_handshake_summary(monkeypatch, capsys):
-    _patch_sampling_provider(monkeypatch)
+    _patch_sampling_provider(monkeypatch, responses=[
+        "Iteration 1 note",
+        "Stubbed sampling output.",
+    ])
     _patch_elicitation_inputs(
         monkeypatch,
         [
@@ -90,7 +105,10 @@ def test_cli_demo_outputs_handshake_summary(monkeypatch, capsys):
 
 
 def test_cli_default_invocation_runs_demo(monkeypatch, capsys):
-    _patch_sampling_provider(monkeypatch)
+    _patch_sampling_provider(monkeypatch, responses=[
+        "Iteration 1 note",
+        "Stubbed sampling output.",
+    ])
     _patch_elicitation_inputs(
         monkeypatch,
         [
@@ -107,7 +125,10 @@ def test_cli_default_invocation_runs_demo(monkeypatch, capsys):
 
 
 def test_cli_creates_log_file(monkeypatch, tmp_path, capsys):
-    _patch_sampling_provider(monkeypatch)
+    _patch_sampling_provider(monkeypatch, responses=[
+        "Iteration 1 note",
+        "Stubbed sampling output.",
+    ])
     _patch_elicitation_inputs(
         monkeypatch,
         [
@@ -137,3 +158,23 @@ def test_cli_creates_log_file(monkeypatch, tmp_path, capsys):
     assert "Discovered 1 resource template(s)." in log_content
     assert "resources list changed" in log_content.lower()
     assert "Resource update received" in log_content
+
+
+def test_cli_elicitation_auto_fill(monkeypatch, capsys):
+    _patch_sampling_provider(
+        monkeypatch,
+        responses=[
+            {"domain": "auto-domain", "goal": "auto-goal", "success_metric": "auto-metric"},
+            "Iteration 1 note",
+            "Stubbed sampling output.",
+        ],
+    )
+    _patch_elicitation_inputs(monkeypatch, ["", "", ""])
+
+    exit_code = cli.main(["demo"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    data = _extract_json(captured.out)
+    assert data["elicitation"]["content"]["domain"] == "auto-domain"
+    assert data["sampling"]["content"]["text"] == "Stubbed sampling output."
