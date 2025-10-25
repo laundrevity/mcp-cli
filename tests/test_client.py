@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+from typing import Any, Dict, List
 
 import pytest
 
@@ -14,6 +15,7 @@ from mcp_cli.models import (
     PromptRenderResult,
     ResourceContent,
     ResourceDescriptor,
+    ResourceTemplate,
     SamplingMessage,
     SamplingRequest,
     SamplingResponse,
@@ -105,6 +107,14 @@ async def test_client_initializes_with_jsonrpc_handshake():
 
     resource_map = {notes_descriptor.uri: notes_content}
 
+    template = ResourceTemplate(
+        uri_template="memory:///tests/{name}",
+        name="test-template",
+        title="Test Resource Template",
+        description="Provides a parameterized test URI.",
+        mime_type="text/markdown",
+    )
+
     async def prompt_handler(arguments: dict) -> PromptRenderResult:
         uri = str(arguments.get("uri", notes_descriptor.uri))
         content = resource_map.get(uri, notes_content)
@@ -127,6 +137,7 @@ async def test_client_initializes_with_jsonrpc_handshake():
         tools=[(echo_definition, echo_handler)],
         resources=[(notes_descriptor, notes_content)],
         prompts=[(prompt_definition, prompt_handler)],
+        resource_templates=[template],
     )
     client = AsyncMCPClient(
         capabilities=client_caps,
@@ -134,6 +145,22 @@ async def test_client_initializes_with_jsonrpc_handshake():
         protocol_version="2025-06-18",
     )
     client.set_sampling_provider(_StubSamplingProvider())
+
+    updates: List[Dict[str, Any]] = []
+    list_changes = {"resources": 0, "tools": 0, "prompts": 0}
+
+    async def on_update(params: Dict[str, Any]) -> None:
+        updates.append(params)
+
+    client.register_notification_handler(
+        "notifications/resources/updated",
+        on_update,
+    )
+    for category in list_changes.keys():
+        client.register_notification_handler(
+            f"notifications/{category}/list_changed",
+            lambda params, key=category: list_changes.__setitem__(key, list_changes[key] + 1),
+        )
 
     server_task = asyncio.create_task(server.serve(transport.server_endpoint()))
 
@@ -163,8 +190,8 @@ async def test_client_initializes_with_jsonrpc_handshake():
         assert server.last_seen_client_capabilities == client_caps
 
         tools = await client.list_tools()
-        assert len(tools) == 1
-        assert tools[0].name == "echo"
+        tool_names = {tool.name for tool in tools}
+        assert "echo" in tool_names
 
         tool_result = await client.call_tool("echo", {"message": "hello"})
         assert tool_result.is_error is False
@@ -179,6 +206,17 @@ async def test_client_initializes_with_jsonrpc_handshake():
         assert len(contents) == 1
         assert "Demo Note" in (contents[0].text or "")
 
+        await client.subscribe_resource(resource_descriptor.uri)
+        await server.notify_resource_updated(
+            resource_descriptor.uri,
+            title=resource_descriptor.title,
+        )
+        await wait_for_condition(lambda: len(updates) >= 1)
+        assert updates[0]["uri"] == resource_descriptor.uri
+
+        templates = await client.list_resource_templates()
+        assert templates[0].uri_template
+
         prompts = await client.list_prompts()
         assert len(prompts) == 1
         assert prompts[0].name == "summarize-note"
@@ -189,6 +227,11 @@ async def test_client_initializes_with_jsonrpc_handshake():
         )
         assert "summarize" in (prompt_result.description or "").lower()
         assert prompt_result.messages[0].content.type == "text"
+
+        await server.notify_resources_list_changed()
+        await server.notify_tools_list_changed()
+        await server.notify_prompts_list_changed()
+        await wait_for_condition(lambda: all(count >= 1 for count in list_changes.values()))
 
         sampling_result = await server.request_sampling(
             messages=[

@@ -5,6 +5,7 @@ import inspect
 import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
+from . import telemetry
 from .models import (
     ClientCapabilities,
     ClientInfo,
@@ -13,6 +14,7 @@ from .models import (
     PromptRenderResult,
     ResourceContent,
     ResourceDescriptor,
+    ResourceTemplate,
     SamplingMessage,
     SamplingRequest,
     SamplingResponse,
@@ -42,6 +44,7 @@ class AsyncMCPServer:
             List[Tuple[ResourceDescriptor, ResourceContent]]
         ] = None,
         prompts: Optional[List[Tuple[PromptDefinition, PromptHandler]]] = None,
+        resource_templates: Optional[List[ResourceTemplate]] = None,
     ) -> None:
         self.capabilities = capabilities
         self.server_info = server_info
@@ -58,6 +61,8 @@ class AsyncMCPServer:
         self._tools: Dict[str, Tuple[ToolDefinition, ToolHandler]] = {}
         self._resources: Dict[str, Tuple[ResourceDescriptor, ResourceContent]] = {}
         self._prompts: Dict[str, Tuple[PromptDefinition, PromptHandler]] = {}
+        self._resource_templates: List[ResourceTemplate] = []
+        self._resource_subscribers: Dict[str, bool] = {}
         self._request_counter = 0
         self._pending_requests: Dict[int, asyncio.Future] = {}
 
@@ -70,6 +75,9 @@ class AsyncMCPServer:
         if prompts:
             for definition, handler in prompts:
                 self.register_prompt(definition, handler)
+        if resource_templates:
+            for template in resource_templates:
+                self.register_resource_template(template)
 
         self._logger.debug(
             "Server instantiated with protocol=%s capabilities=%s",
@@ -98,6 +106,12 @@ class AsyncMCPServer:
                 method = message.get("method")
                 message_id = message.get("id")
                 self._logger.debug("Received message method=%s payload=%s", method, message)
+                telemetry.record_event(
+                    role="server",
+                    direction="incoming",
+                    payload=message,
+                    channel=method or "response",
+                )
 
                 if method:
                     await self._handle_request_message(method, message)
@@ -148,6 +162,10 @@ class AsyncMCPServer:
         self._prompts[definition.name] = (definition, handler)
         self._logger.debug("Registered prompt %s", definition.name)
 
+    def register_resource_template(self, template: ResourceTemplate) -> None:
+        self._resource_templates.append(template)
+        self._logger.debug("Registered resource template %s", template.name)
+
     async def request_sampling(
         self,
         *,
@@ -180,6 +198,10 @@ class AsyncMCPServer:
             await self._handle_resources_list(message)
         elif method == "resources/read":
             await self._handle_resources_read(message)
+        elif method == "resources/subscribe":
+            await self._handle_resources_subscribe(message)
+        elif method == "resources/templates/list":
+            await self._handle_resource_templates_list(message)
         elif method == "prompts/list":
             await self._handle_prompts_list(message)
         elif method == "prompts/get":
@@ -230,7 +252,7 @@ class AsyncMCPServer:
 
         self._logger.debug("Sending initialize response payload=%s", response)
         if self._endpoint is not None:
-            await self._endpoint.send(response)
+            await self._send_with_telemetry(response)
 
     async def _handle_tools_list(self, message: dict) -> None:
         if self._endpoint is None:
@@ -247,7 +269,7 @@ class AsyncMCPServer:
             },
         }
         self._logger.debug("Responding to tools/list with %s", response)
-        await self._endpoint.send(response)
+        await self._send_with_telemetry(response)
 
     async def _handle_tools_call(self, message: dict) -> None:
         if self._endpoint is None:
@@ -296,7 +318,7 @@ class AsyncMCPServer:
             "result": result.to_payload(),
         }
         self._logger.debug("Tool '%s' result payload=%s", definition.name, response)
-        await self._endpoint.send(response)
+        await self._send_with_telemetry(response)
 
     async def _handle_resources_list(self, message: dict) -> None:
         if self._endpoint is None:
@@ -313,7 +335,7 @@ class AsyncMCPServer:
             },
         }
         self._logger.debug("Responding to resources/list with %s", response)
-        await self._endpoint.send(response)
+        await self._send_with_telemetry(response)
 
     async def _handle_resources_read(self, message: dict) -> None:
         if self._endpoint is None:
@@ -352,7 +374,56 @@ class AsyncMCPServer:
             },
         }
         self._logger.debug("Responding to resources/read with %s", response)
-        await self._endpoint.send(response)
+        await self._send_with_telemetry(response)
+
+    async def _handle_resources_subscribe(self, message: dict) -> None:
+        if self._endpoint is None:
+            self._logger.warning("Cannot respond to resources/subscribe; endpoint is not set.")
+            return
+
+        params = message.get("params", {})
+        if not isinstance(params, dict):
+            params = {}
+
+        uri = params.get("uri")
+        if uri not in self._resources:
+            await self._send_error(
+                message.get("id"),
+                code=-32002,
+                message=f"Resource not found: {uri}",
+            )
+            return
+
+        self._resource_subscribers[uri] = True
+        response = {
+            "jsonrpc": "2.0",
+            "id": message.get("id"),
+            "result": {"uri": uri},
+        }
+        self._logger.debug("Registered subscription for resource %s", uri)
+        await self._send_with_telemetry(response)
+
+    async def _handle_resource_templates_list(self, message: dict) -> None:
+        if self._endpoint is None:
+            self._logger.warning(
+                "Cannot respond to resources/templates/list; endpoint is not set."
+            )
+            return
+
+        response = {
+            "jsonrpc": "2.0",
+            "id": message.get("id"),
+            "result": {
+                "resourceTemplates": [
+                    template.to_payload() for template in self._resource_templates
+                ],
+            },
+        }
+        self._logger.debug(
+            "Responding to resources/templates/list with %s",
+            response,
+        )
+        await self._send_with_telemetry(response)
 
     async def _handle_prompts_list(self, message: dict) -> None:
         if self._endpoint is None:
@@ -369,7 +440,7 @@ class AsyncMCPServer:
             },
         }
         self._logger.debug("Responding to prompts/list with %s", response)
-        await self._endpoint.send(response)
+        await self._send_with_telemetry(response)
 
     async def _handle_prompts_get(self, message: dict) -> None:
         if self._endpoint is None:
@@ -416,7 +487,58 @@ class AsyncMCPServer:
             "result": rendered.to_payload(),
         }
         self._logger.debug("Prompt '%s' render payload=%s", name, response)
-        await self._endpoint.send(response)
+        await self._send_with_telemetry(response)
+
+    async def notify_resource_updated(
+        self,
+        uri: str,
+        *,
+        title: Optional[str] = None,
+    ) -> None:
+        if self._endpoint is None:
+            return
+        if not self._resource_subscribers.get(uri):
+            self._logger.debug(
+                "Skipping resource update for %s; no subscribers registered.",
+                uri,
+            )
+            return
+
+        notification = {
+            "jsonrpc": "2.0",
+            "method": "notifications/resources/updated",
+            "params": {
+                "uri": uri,
+            },
+        }
+        if title is not None:
+            notification["params"]["title"] = title
+
+        self._logger.debug("Sending resource update notification: %s", notification)
+        await self._send_with_telemetry(notification)
+
+    async def notify_resources_list_changed(self) -> None:
+        await self._send_list_changed_notification("resources")
+
+    async def notify_tools_list_changed(self) -> None:
+        await self._send_list_changed_notification("tools")
+
+    async def notify_prompts_list_changed(self) -> None:
+        await self._send_list_changed_notification("prompts")
+
+    async def _send_list_changed_notification(self, category: str) -> None:
+        if self._endpoint is None:
+            return
+        allowed = {"resources", "tools", "prompts"}
+        if category not in allowed:
+            self._logger.warning("Unsupported list-changed category: %s", category)
+            return
+        notification = {
+            "jsonrpc": "2.0",
+            "method": f"notifications/{category}/list_changed",
+        }
+        self._logger.debug("Sending %s list_changed notification", category)
+        await self._send_with_telemetry(notification)
 
     async def _send_error(self, request_id: Optional[int], *, code: int, message: str) -> None:
         if self._endpoint is None:
@@ -431,7 +553,7 @@ class AsyncMCPServer:
             },
         }
         self._logger.debug("Sending error response: %s", error_payload)
-        await self._endpoint.send(error_payload)
+        await self._send_with_telemetry(error_payload)
 
     async def _send_request(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         if self._endpoint is None:
@@ -447,7 +569,7 @@ class AsyncMCPServer:
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending_requests[request_id] = future
         self._logger.debug("Sending request id=%s method=%s params=%s", request_id, method, params)
-        await self._endpoint.send(payload)
+        await self._send_with_telemetry(payload)
         response = await future
 
         if "error" in response:
@@ -458,3 +580,24 @@ class AsyncMCPServer:
     def _next_request_id(self) -> int:
         self._request_counter += 1
         return self._request_counter
+
+    async def _send_with_telemetry(self, payload: Dict[str, Any]) -> None:
+        if self._endpoint is None:
+            self._logger.warning("Cannot send payload; endpoint not set.")
+            return
+
+        channel: Optional[str] = None
+        if "method" in payload:
+            channel = str(payload.get("method"))
+        elif "result" in payload:
+            channel = "response"
+        elif "error" in payload:
+            channel = "error"
+
+        telemetry.record_event(
+            role="server",
+            direction="outgoing",
+            payload=payload,
+            channel=channel,
+        )
+        await self._endpoint.send(payload)

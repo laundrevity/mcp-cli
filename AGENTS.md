@@ -16,6 +16,15 @@ Each CLI invocation creates `logs/mcp-cli-<timestamp>.log` with DEBUG-level mess
 ## Sampling Integration
 The client advertises `sampling` support and delegates `sampling/createMessage` requests to a local LLM by default. Run a llama.cpp server on `http://127.0.0.1:8080` (OpenAI-compatible `/v1/chat/completions`) before starting the CLI for authentic generations. If the server is unreachable, the provider returns a logged error response so the session continues. Customize endpoints via `SamplingConfig` in `mcp_cli/sampling.py` or swap in a bespoke provider during tests by calling `AsyncMCPClient.set_sampling_provider(...)`.
 
+## Resource Subscriptions
+Servers expose in-memory resources and prompts while advertising `resources.subscribe`. Clients subscribe via `resources/subscribe`, and the server emits `notifications/resources/updated` whenever a resource mock changes. Watch the CLI output (and logs) to confirm notifications are flowing and update handlers react accordingly.
+
+## Resource Templates & List Changes
+Resource templates are served through `resources/templates/list` so clients can generate URIs dynamically (see the demo `release-notes` template). Tools, prompts, and resources now fire `notifications/*/list_changed` events, which the client logs and surfaces in the CLI payload for easy inspection.
+
+## Live Telemetry Viewer
+Use `uv run python -m mcp_cli.web --port 8765` to start a lightweight browser viewer that streams the JSON-RPC traffic in real time. The CLI and server emit events into `logs/events.jsonl`, so the viewer can also replay saved runs with `--events path/to/events.jsonl`.
+
 ## Coding Style & Naming Conventions
 Follow PEP 8 with 4-space indents, descriptive `snake_case` for functions, and `PascalCase` for protocol dataclasses. Prefer explicit `async def` workflows, type hints on public APIs, and docstrings that cite relevant MCP sections (for example, “Spec §Server Features”). Run `uv run ruff check .` before opening a PR; use `ruff format` to auto-format when necessary.
 

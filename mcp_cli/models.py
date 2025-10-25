@@ -214,7 +214,7 @@ class ToolCallResult:
         )
 
 
-@dataclass(frozen=True)
+@dataclass
 class ResourceDescriptor:
     uri: str
     name: str
@@ -254,7 +254,7 @@ class ResourceDescriptor:
         )
 
 
-@dataclass(frozen=True)
+@dataclass
 class ResourceContent:
     uri: str
     name: str
@@ -370,6 +370,42 @@ class SamplingResponse:
             content=ContentBlock.from_payload(payload.get("content", {})),
             model=payload.get("model"),
             stop_reason=payload.get("stopReason"),
+        )
+
+
+@dataclass
+class ResourceTemplate:
+    uri_template: str
+    name: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    mime_type: Optional[str] = None
+    annotations: Optional[Dict[str, Any]] = None
+
+    def to_payload(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "uriTemplate": self.uri_template,
+            "name": self.name,
+        }
+        if self.title is not None:
+            payload["title"] = self.title
+        if self.description is not None:
+            payload["description"] = self.description
+        if self.mime_type is not None:
+            payload["mimeType"] = self.mime_type
+        if self.annotations:
+            payload["annotations"] = self.annotations
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload: Dict[str, Any]) -> "ResourceTemplate":
+        return cls(
+            uri_template=str(payload.get("uriTemplate", "")),
+            name=str(payload.get("name", "")),
+            title=payload.get("title"),
+            description=payload.get("description"),
+            mime_type=payload.get("mimeType"),
+            annotations=payload.get("annotations"),
         )
 
 

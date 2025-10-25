@@ -5,6 +5,7 @@ import contextlib
 import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from . import telemetry
 from .models import (
     ClientCapabilities,
     ClientInfo,
@@ -14,6 +15,7 @@ from .models import (
     PromptRenderResult,
     ResourceContent,
     ResourceDescriptor,
+    ResourceTemplate,
     SamplingRequest,
     SamplingResponse,
     ServerCapabilities,
@@ -25,6 +27,7 @@ from .sampling import SamplingProvider
 from .transport import TransportClosed, TransportEndpoint
 
 RequestHandler = Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]
+NotificationHandler = Callable[[Dict[str, Any]], Awaitable[None] | None]
 
 
 class AsyncMCPClient:
@@ -47,6 +50,7 @@ class AsyncMCPClient:
         self._pending_requests: Dict[int, asyncio.Future] = {}
         self._listener_task: Optional[asyncio.Task] = None
         self._logger = logging.getLogger("mcp_cli.client")
+        self._notification_handlers: Dict[str, NotificationHandler] = {}
         self.register_request_handler(
             "sampling/createMessage",
             self._handle_sampling_create_message,
@@ -73,6 +77,13 @@ class AsyncMCPClient:
         handler: RequestHandler,
     ) -> None:
         self._request_handlers[method] = handler
+
+    def register_notification_handler(
+        self,
+        method: str,
+        handler: NotificationHandler,
+    ) -> None:
+        self._notification_handlers[method] = handler
 
     def _next_request_id(self) -> int:
         self._request_counter += 1
@@ -162,8 +173,32 @@ class AsyncMCPClient:
         contents = [
             ResourceContent.from_payload(item) for item in contents_payload
         ]
-        self._logger.debug("Read resource %s with %d content blocks.", uri, len(contents))
+        self._logger.debug(
+            "Read resource %s with %d content blocks.",
+            uri,
+            len(contents),
+        )
         return contents
+
+    async def subscribe_resource(self, uri: str) -> Dict[str, Any]:
+        response = await self._send_request(
+            "resources/subscribe",
+            {"uri": uri},
+        )
+        self._logger.debug("Subscribed to resource %s", uri)
+        return response.get("result", {})
+
+    async def list_resource_templates(self) -> List[ResourceTemplate]:
+        response = await self._send_request("resources/templates/list", {})
+        result = response.get("result", {})
+        templates_payload = result.get("resourceTemplates", [])
+        templates = [
+            ResourceTemplate.from_payload(item) for item in templates_payload
+        ]
+        self._logger.debug(
+            "Received %d resource template(s) from server.", len(templates)
+        )
+        return templates
 
     async def list_prompts(self) -> List[PromptDefinition]:
         response = await self._send_request("prompts/list", {})
@@ -205,6 +240,12 @@ class AsyncMCPClient:
                 "method": "notifications/shutdown",
             }
             self._logger.debug("Sending shutdown notification payload=%s", shutdown_payload)
+            telemetry.record_event(
+                role="client",
+                direction="outgoing",
+                payload=shutdown_payload,
+                channel="notifications/shutdown",
+            )
             await self._endpoint.send(shutdown_payload)
         except TransportClosed:
             self._logger.debug("Transport already closed during shutdown.")
@@ -236,15 +277,27 @@ class AsyncMCPClient:
                 message_id = message.get("id")
 
                 if method:
+                    telemetry.record_event(
+                        role="client",
+                        direction="incoming",
+                        payload=message,
+                        channel=method,
+                    )
                     if message_id is not None:
                         await self._handle_request(message)
                     else:
-                        self._logger.info("Received notification: %s", method)
+                        await self._handle_notification(method, message.get("params"))
                     continue
 
                 if message_id is not None:
                     pending = self._pending_requests.pop(message_id, None)
                     if pending is not None and not pending.done():
+                        telemetry.record_event(
+                            role="client",
+                            direction="incoming",
+                            payload=message,
+                            channel="response",
+                        )
                         pending.set_result(message)
                     else:
                         self._logger.debug(
@@ -274,6 +327,12 @@ class AsyncMCPClient:
         }
 
         self._logger.debug("Sending request id=%s method=%s params=%s", request_id, method, params)
+        telemetry.record_event(
+            role="client",
+            direction="outgoing",
+            payload=request,
+            channel=method,
+        )
         await self._endpoint.send(request)
 
         response = await future
@@ -298,6 +357,12 @@ class AsyncMCPClient:
         if params:
             notification["params"] = params
         self._logger.debug("Sending notification method=%s params=%s", method, params)
+        telemetry.record_event(
+            role="client",
+            direction="outgoing",
+            payload=notification,
+            channel=method,
+        )
         await self._endpoint.send(notification)
 
     async def _handle_request(self, message: Dict[str, Any]) -> None:
@@ -339,7 +404,28 @@ class AsyncMCPClient:
             "result": result_payload,
         }
         self._logger.debug("Sending response for %s: %s", method, response)
+        telemetry.record_event(
+            role="client",
+            direction="outgoing",
+            payload=response,
+            channel=method,
+        )
         await self._endpoint.send(response)
+
+    async def _handle_notification(
+        self,
+        method: str,
+        params: Optional[Dict[str, Any]],
+    ) -> None:
+        handler = self._notification_handlers.get(method)
+        if handler is None:
+            self._logger.info("Received notification: %s", method)
+            return
+
+        payload = params if isinstance(params, dict) else {}
+        result = handler(payload)
+        if asyncio.iscoroutine(result):
+            await result
 
     async def _send_error_response(
         self,
@@ -359,6 +445,12 @@ class AsyncMCPClient:
             },
         }
         self._logger.debug("Sending error response payload=%s", error_payload)
+        telemetry.record_event(
+            role="client",
+            direction="outgoing",
+            payload=error_payload,
+            channel="error",
+        )
         await self._endpoint.send(error_payload)
 
     async def _handle_sampling_create_message(

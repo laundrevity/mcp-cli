@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from . import telemetry
+
 LOG_ENV_VAR = "MCP_CLI_LOG_DIR"
 LOG_FILE_PREFIX = "mcp-cli"
 LOG_TIME_FORMAT = "%Y%m%d-%H%M%S%f"
@@ -51,6 +53,7 @@ def setup_logging() -> Path:
     logger.addHandler(file_handler)
 
     _current_log_file = log_path
+    telemetry.initialize(log_dir)
     logger.debug("Initialized logging; writing to %s", log_path)
     return log_path
 

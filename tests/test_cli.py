@@ -37,15 +37,24 @@ def test_cli_demo_outputs_handshake_summary(monkeypatch, capsys):
     assert "Handshake succeeded" in captured.out
     data = _extract_json(captured.out)
     assert data["protocolVersion"] == "2025-06-18"
-    assert data["tools"][0]["name"] == "echo"
-    assert data["toolCall"]["content"][0]["text"].startswith("ECHO:")
+    tool_names = {tool["name"] for tool in data["tools"]}
+    assert {"echo", "draft_release_plan"}.issubset(tool_names)
+    assert data["toolCall"]["content"][0]["text"].startswith("Milestone:")
     assert len(data["resources"]) == 2
     assert "memory:///guides/demo-notes" in data["resourcePreview"]
+    assert "Release Plan" in data["resourcePreview"]["memory:///guides/checklist"]
+    assert data["resourceUpdates"]
+    template_names = {tmpl["name"] for tmpl in data["resourceTemplates"]}
+    assert "release-notes" in template_names
+    assert data["listChanged"]["resources"] >= 1
+    assert data["listChanged"]["tools"] >= 1
+    assert data["listChanged"]["prompts"] >= 1
     assert data["prompts"][0]["name"] == "summarize-resource"
     assert data["prompt"]["messages"][0]["content"]["text"].startswith("Please read")
     assert data["sampling"]["content"]["text"] == "Stubbed sampling output."
     assert "Sample tool output" in captured.out
     assert "Resource snippets:" in captured.out
+    assert "Resource updates:" in captured.out
     assert "Prompt preview:" in captured.out
     assert "Sampling output:" in captured.out
 
@@ -76,6 +85,9 @@ def test_cli_creates_log_file(monkeypatch, tmp_path, capsys):
     log_content = log_files[0].read_text(encoding="utf-8")
     assert "Initialized logging" in log_content
     assert "Handshake complete" in log_content
-    assert "Discovered 1 tool(s)." in log_content
+    assert "Discovered 2 tool(s)." in log_content
     assert "Discovered 2 resource(s)." in log_content
     assert "Discovered 1 prompt(s)." in log_content
+    assert "Discovered 1 resource template(s)." in log_content
+    assert "resources list changed" in log_content.lower()
+    assert "Resource update received" in log_content
