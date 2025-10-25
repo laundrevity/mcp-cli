@@ -1,13 +1,14 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-The CLI currently boots from `main.py`, which will evolve into the orchestration layer for the MCP host and async agent flows. Place reusable logic inside a package directory named `mcp_cli/` (create it under the repo root) with modules split between `client.py`, `server.py`, and `runner.py` so the CLI stays thin. Keep protocol fixtures, JSON-RPC helpers, and shared test doubles inside `tests/utils/`, and stash sample transcripts under `tests/data/` for clarity.
+The CLI entrypoint delegates to `mcp_cli/cli.py`, which orchestrates an async client/server handshake demo by wiring together `mcp_cli/client.py`, `mcp_cli/server.py`, and `mcp_cli/transport.py`. Keep reusable protocol models in `mcp_cli/models.py`, and leave `main.py` as a thin passthrough into the package. Store protocol fixtures, JSON-RPC helpers, and shared test doubles inside `tests/utils/`, and stash sample transcripts under `tests/data/` for clarity.
 
 ## Build, Test, and Development Commands
 - `uv sync` — install the locked toolchain from `pyproject.toml` and `uv.lock`.
-- `uv run python main.py --help` — exercise the CLI entrypoint once argument parsing is added.
+- `uv run python main.py` — run the default handshake simulation to confirm the CLI still connects a client and server.
+- `uv run python main.py --help` — inspect subcommands and flags.
 - `uv run pytest` — execute the async test suite (pytest + pytest-asyncio) with default markers.
-- `uv run pytest tests/test_client.py::test_client_initializes` — re-run a focused spec during TDD.
+- `uv run pytest tests/test_client.py::test_client_initializes_with_jsonrpc_handshake` — re-run a focused spec during TDD.
 
 ## Coding Style & Naming Conventions
 Follow PEP 8 with 4-space indents, descriptive `snake_case` for functions, and `PascalCase` for protocol dataclasses. Prefer explicit `async def` workflows, type hints on public APIs, and docstrings that cite relevant MCP sections (for example, “Spec §Server Features”). Run `uv run ruff check .` before opening a PR; use `ruff format` to auto-format when necessary.
