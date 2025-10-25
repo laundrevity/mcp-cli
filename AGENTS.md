@@ -13,6 +13,9 @@ The CLI entrypoint delegates to `mcp_cli/cli.py`, which orchestrates an async cl
 ## Logging & Diagnostics
 Each CLI invocation creates `logs/mcp-cli-<timestamp>.log` with DEBUG-level messages from the client, server, and transport orchestration. Override the destination by exporting `MCP_CLI_LOG_DIR=/tmp/mcp-cli-logs` (tests do this automatically). Tail the latest file while iterating (`tail -f logs/mcp-cli-*.log`) to trace JSON-RPC exchanges and transport state transitions.
 
+## Sampling Integration
+The client advertises `sampling` support and delegates `sampling/createMessage` requests to a local LLM by default. Run a llama.cpp server on `http://127.0.0.1:8080` (OpenAI-compatible `/v1/chat/completions`) before starting the CLI for authentic generations. If the server is unreachable, the provider returns a logged error response so the session continues. Customize endpoints via `SamplingConfig` in `mcp_cli/sampling.py` or swap in a bespoke provider during tests by calling `AsyncMCPClient.set_sampling_provider(...)`.
+
 ## Coding Style & Naming Conventions
 Follow PEP 8 with 4-space indents, descriptive `snake_case` for functions, and `PascalCase` for protocol dataclasses. Prefer explicit `async def` workflows, type hints on public APIs, and docstrings that cite relevant MCP sections (for example, “Spec §Server Features”). Run `uv run ruff check .` before opening a PR; use `ruff format` to auto-format when necessary.
 
