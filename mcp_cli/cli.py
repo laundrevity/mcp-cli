@@ -15,9 +15,9 @@ from .models import (
     ClientCapabilities,
     ClientInfo,
     ContentBlock,
-    HandshakeResult,
     ElicitationRequest,
     ElicitationResponse,
+    HandshakeResult,
     PromptArgument,
     PromptDefinition,
     PromptRenderResult,
@@ -25,8 +25,8 @@ from .models import (
     ResourceDescriptor,
     ResourceTemplate,
     RootDescriptor,
-    SamplingRequest,
     SamplingMessage,
+    SamplingRequest,
     SamplingResponse,
     ServerCapabilities,
     ServerInfo,
@@ -138,9 +138,9 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
     )
     base_checklist_text = checklist_text
     elicited_context: Dict[str, str] = {
-        "domain": "Cross-tool prototyping",
-        "goal": "Demonstrate negotiated MCP capability orchestration.",
-        "success_metric": "Blueprint with concrete follow-up experiments.",
+        "focus": "",
+        "constraints": "",
+        "verification": "",
     }
 
     journal_descriptor = ResourceDescriptor(
@@ -158,17 +158,16 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
         text="# Capability Journal\n\n(Waiting for elicitation input.)",
     )
     journal_entries: List[str] = []
+    journal_dirty = False
 
     def render_capability_notes() -> str:
         lines = ["### Capability Summary"]
-        for key, label in (
-            ("domain", "Exploration domain"),
-            ("goal", "Primary goal"),
-            ("success_metric", "Success metric"),
-        ):
-            value = elicited_context.get(key)
-            if value:
-                lines.append(f"- {label}: {value}")
+        focus = elicited_context.get("focus") or "(auto) Context protocol refinement"
+        constraints = elicited_context.get("constraints") or "(auto) Honor existing resource/security boundaries"
+        verification = elicited_context.get("verification") or "(auto) Run agreed verification command"
+        lines.append(f"- Focus: {focus}")
+        lines.append(f"- Constraints: {constraints}")
+        lines.append(f"- Verification: {verification}")
         return "\n".join(lines)
 
     checklist_content.text = (
@@ -183,9 +182,9 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
         provided: Dict[str, Any],
     ) -> Dict[str, Any]:
         provider = getattr(client, "_sampling_provider", None)
-        if provider is None:
+        if provider is None or not missing_keys:
             logger.info("Sampling provider unavailable; using placeholder auto responses.")
-            return {key: provided.get(key, f"[auto] {key}") for key in missing_keys}
+            return {key: provided.get(key, f"auto-{key}") for key in missing_keys}
 
         prompt = textwrap.dedent(
             f"""You are assisting with Model Context Protocol elicitation.
@@ -226,7 +225,7 @@ Return a JSON object containing only the requested field names and string values
             if value:
                 suggestions[key] = str(value)
             else:
-                suggestions[key] = provided.get(key, f"[auto] {key}")
+                suggestions[key] = provided.get(key, f"auto-{key}")
 
         return suggestions
 
@@ -276,32 +275,46 @@ Return a JSON object containing only the requested field names and string values
         )
 
     async def handle_elicitation(request: ElicitationRequest) -> ElicitationResponse:
-        properties = (request.requested_schema or {}).get("properties", {})
         if request.message:
             print(f"Elicitation request: {request.message}")
+
+        prompts = [
+            (
+                "focus",
+                "Describe the capability or behaviour we want to improve",
+            ),
+            (
+                "constraints",
+                "List any constraints, risks, or systems we must honor",
+            ),
+            (
+                "verification",
+                "Optional: command or test to verify success",
+            ),
+        ]
 
         manual_responses: Dict[str, Any] = {}
         remaining_keys: List[str] = []
 
-        for key, schema in properties.items():
-            description = schema.get("description") or f"Provide value for '{key}'"
+        for key, description in prompts:
             prompt_text = (
                 f"{description}\n"
                 "Press Enter to let the local model suggest a value.\n> "
             )
-            user_value = input(prompt_text).strip()
+            try:
+                user_value = input(prompt_text).strip()
+            except EOFError:
+                user_value = ""
             if user_value:
                 manual_responses[key] = user_value
             else:
                 remaining_keys.append(key)
 
-        auto_responses: Dict[str, Any] = {}
-        if remaining_keys:
-            auto_responses = await auto_complete_elicitation(
-                request,
-                remaining_keys,
-                manual_responses,
-            )
+        auto_responses = await auto_complete_elicitation(
+            request,
+            remaining_keys,
+            manual_responses,
+        )
 
         combined = {**auto_responses, **manual_responses}
         if not combined:
@@ -431,24 +444,24 @@ Return a JSON object containing only the requested field names and string values
         await client.set_logging_level("debug")
 
         elicitation_result = await server.request_elicitation(
-            message="Share the domain, goal, and success metric that should steer this MCP capability experiment.",
+            message="Share the focus, constraints, and verification step for this MCP capability refinement.",
             requested_schema={
                 "type": "object",
                 "properties": {
-                    "domain": {
+                    "focus": {
                         "type": "string",
-                        "description": "Where should the capability exploration be applied?",
+                        "description": "What capability or behaviour do we want to improve?",
                     },
-                    "goal": {
+                    "constraints": {
                         "type": "string",
-                        "description": "What outcome should the blueprint aim for?",
+                        "description": "List any constraints, risks, or systems that limit the change.",
                     },
-                    "success_metric": {
+                    "verification": {
                         "type": "string",
-                        "description": "How will we measure success?",
+                        "description": "How would we verify that the improvement worked (command, test, metric)?",
                     },
                 },
-                "required": ["domain"],
+                "required": ["focus"],
             },
         )
         if (
@@ -499,14 +512,18 @@ Return a JSON object containing only the requested field names and string values
             resource_snippets[descriptor.uri] = snippet
 
         async def append_journal_entry(title: str, body: str) -> None:
+            nonlocal journal_dirty
             cleaned = body.strip() or "(no content recorded)"
-            journal_entries.append(f"## {title}\n{cleaned}")
+            filtered = [
+                entry
+                for entry in journal_entries
+                if not entry.startswith(f"## {title}")
+            ]
+            filtered.append(f"## {title}\n{cleaned}")
+            journal_entries[:] = filtered
             journal_content.text = "# Capability Journal\n\n" + "\n\n".join(journal_entries)
             resource_snippets[journal_descriptor.uri] = journal_content.text.strip()
-            await server.notify_resource_updated(
-                journal_descriptor.uri,
-                title=journal_descriptor.title,
-            )
+            journal_dirty = True
 
         async def capture_sampling_note(
             title: str,
@@ -556,18 +573,18 @@ Roots subscribed: {', '.join(root.uri for root in client_roots) if client_roots 
 """
         )
 
-        iteration_results: List[SamplingResponse] = []
-        for iteration in range(1, 3):
-            resource_catalogue = "\n".join(
-                f"- {uri}: {(resource_snippets.get(uri, '')[:120])}"
-                for uri in resource_snippets
-            )
-            recent_logs = json.dumps(log_messages[-5:], indent=2) if log_messages else "(no logs yet)"
-            prompt_text = textwrap.dedent(
-                f"""Iteration {iteration}: recommend the next capability refinement.
+        resource_catalogue = "\n".join(
+            f"- {uri}: {(resource_snippets.get(uri, '').splitlines()[0])}"
+            for uri in resource_snippets
+        )
+        recent_logs = json.dumps(log_messages[-5:], indent=2) if log_messages else "(no logs yet)"
 
-Current context summary:
-{render_capability_notes()}
+        diagnostic_prompt = textwrap.dedent(
+            f"""Provide a diagnostic summary of the current MCP session.
+
+Focus: {elicited_context.get('focus') or '(auto)'}
+Constraints: {elicited_context.get('constraints') or '(auto)'}
+Verification idea: {elicited_context.get('verification') or '(auto)'}
 
 Handshake snapshot:
 {handshake_overview}
@@ -575,25 +592,66 @@ Handshake snapshot:
 Resource catalogue:
 {resource_catalogue}
 
-Latest journal entries:
-{journal_content.text}
-
 Recent server logs (up to 5):
 {recent_logs}
-
-Give a concise recommendation and rationale.
 """
+        )
+
+        iteration_results: List[SamplingResponse] = []
+        iteration_results.append(
+            await capture_sampling_note(
+                "Diagnostic summary",
+                diagnostic_prompt,
+                fallback="Diagnostic summary unavailable; inspect handshake manually.",
             )
-            fallback = f"Iteration {iteration}: inspect resources and revisit sampling manually."
-            iteration_results.append(
-                await capture_sampling_note(
-                    f"Iteration {iteration} refinement",
-                    prompt_text,
-                    fallback=fallback,
-                )
+        )
+
+        hypothesis_prompt = textwrap.dedent(
+            f"""Using the diagnostic summary below, propose a concrete capability refinement hypothesis.
+
+Diagnostic summary:
+{iteration_results[-1].content.text if iteration_results[-1].content.text else '(empty)'}
+
+Keep within the stated constraints: {elicited_context.get('constraints') or '(none)'}
+"""
+        )
+
+        iteration_results.append(
+            await capture_sampling_note(
+                "Refinement hypothesis",
+                hypothesis_prompt,
+                fallback="Hypothesis deferred; capture manually.",
             )
+        )
+
+        action_prompt = textwrap.dedent(
+            f"""Draft an actionable plan that operationalises the refinement hypothesis.
+
+Hypothesis:
+{iteration_results[-1].content.text if iteration_results[-1].content.text else '(empty)'}
+
+Diagnostic context:
+{iteration_results[-2].content.text if iteration_results[-2].content.text else '(empty)'}
+
+Proposed verification step: {elicited_context.get('verification') or '(not specified)'}
+"""
+        )
+
+        iteration_results.append(
+            await capture_sampling_note(
+                "Action plan",
+                action_prompt,
+                fallback="Plan pending; execute verification step manually.",
+            )
+        )
 
         sampling_result = iteration_results[-1] if iteration_results else None
+
+        if journal_dirty:
+            await server.notify_resource_updated(
+                journal_descriptor.uri,
+                title=journal_descriptor.title,
+            )
 
         tool_call_result: Optional[ToolCallResult] = None
         if "echo" in tools_by_name:
@@ -612,7 +670,6 @@ Give a concise recommendation and rationale.
             checklist_descriptor.uri,
             title=checklist_descriptor.title,
         )
-        await server.notify_tools_list_changed()
         await asyncio.sleep(0)
         updated_contents = await client.read_resource(checklist_descriptor.uri)
         if updated_contents:
@@ -678,55 +735,31 @@ Give a concise recommendation and rationale.
             for root in client_roots:
                 label = f" ({root.name})" if root.name else ""
                 print(f"- {root.uri}{label}")
-        if log_messages:
-            print("Server logs:")
-            for entry in log_messages:
-                level = entry.get("level", "info")
-                logger_name = entry.get("logger", "server")
-                data = entry.get("data") or {}
-                message = data.get("message") or data.get("event")
-                if message:
-                    print(f"- [{level}] {logger_name}: {message}")
-                else:
-                    print(f"- [{level}] {logger_name}: {data}")
-        if elicitation_result is not None:
-            print("Elicitation response:")
-            if elicitation_result.content:
-                for key, value in elicitation_result.content.items():
-                    print(f"- {key}: {value}")
-            else:
-                print(f"- action: {elicitation_result.action}")
-        if tool_call_result is not None:
-            text_blocks = [
-                block.text for block in tool_call_result.content if block.text
-            ]
-            if text_blocks:
-                print("Sample tool output:")
-                for block in text_blocks:
-                    print(f"- {block}")
-        if resource_snippets:
-            print("Resource snippets:")
-            for uri, snippet in resource_snippets.items():
-                preview = snippet.splitlines()[0] if snippet else "(empty)"
-                print(f"- {uri}: {preview}")
-        if resource_updates:
-            print("Resource updates:")
-            for update in resource_updates:
-                uri = update.get("uri")
-                title = update.get("title", "")
-                print(f"- {uri} {title}".strip())
-        if prompt_result is not None:
-            print("Prompt preview:")
-            for message in prompt_result.messages:
-                if message.content.text:
-                    print(f"- {message.role}: {message.content.text.splitlines()[0]}")
-        if sampling_result is not None and sampling_result.content.text:
-            print("Sampling output:")
-            print(sampling_result.content.text)
-        if list_change_events:
-            print("List change notifications received:")
-            for kind, count in list_change_events.items():
-                print(f"- {kind}: {count}")
+        def _print_summary() -> None:
+            focus = elicited_context.get("focus") or "(auto) Context protocol refinement"
+            constraints = elicited_context.get("constraints") or "(auto) Honor existing boundaries"
+            verification = elicited_context.get("verification") or "(auto) Run verification command"
+            print("Focus:", focus)
+            print("Constraints:", constraints)
+            print("Verification:", verification)
+            if iteration_results:
+                print("\nDiagnostic:")
+                print(textwrap.shorten(iteration_results[0].content.text or "(empty)", width=240, placeholder="…"))
+            if len(iteration_results) > 1:
+                print("\nHypothesis:")
+                print(textwrap.shorten(iteration_results[1].content.text or "(empty)", width=240, placeholder="…"))
+            if sampling_result is not None and sampling_result.content.text:
+                print("\nAction plan:")
+                print(textwrap.shorten(sampling_result.content.text, width=240, placeholder="…"))
+            if tool_call_result is not None:
+                text_blocks = [
+                    block.text for block in tool_call_result.content if block.text
+                ]
+                if text_blocks:
+                    print("\nEcho tool output:")
+                    print(text_blocks[0])
+
+        _print_summary()
 
         return 0
     finally:

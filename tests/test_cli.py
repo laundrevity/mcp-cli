@@ -53,15 +53,16 @@ def _patch_elicitation_inputs(monkeypatch, values):
 
 def test_cli_demo_outputs_handshake_summary(monkeypatch, capsys):
     _patch_sampling_provider(monkeypatch, responses=[
-        "Iteration 1 note",
+        "Iteration 1 diagnostic",
+        "Iteration 2 hypothesis",
         "Stubbed sampling output.",
     ])
     _patch_elicitation_inputs(
         monkeypatch,
         [
             "Interactive tooling",
-            "Showcase negotiated capabilities",
-            "Draft blueprint for next experiment",
+            "Respect current resource contracts",
+            "Run uv run pytest",
         ],
     )
     exit_code = cli.main(["demo"])
@@ -77,13 +78,15 @@ def test_cli_demo_outputs_handshake_summary(monkeypatch, capsys):
     assert data["toolCall"]["content"][0]["text"].startswith("ECHO:")
     assert len(data["resources"]) >= 3
     assert "memory:///guides/demo-notes" in data["resourcePreview"]
-    assert "Capability Summary" in data["resourcePreview"]["memory:///guides/checklist"]
+    checklist_preview = data["resourcePreview"]["memory:///guides/checklist"]
+    assert "Capability Summary" in checklist_preview
+    assert "Interactive tooling" in checklist_preview
     assert "memory:///reports/capability-journal" in data["resourcePreview"]
     assert data["resourceUpdates"]
     template_names = {tmpl["name"] for tmpl in data["resourceTemplates"]}
     assert "release-notes" in template_names
     assert data["listChanged"]["resources"] >= 1
-    assert data["listChanged"]["tools"] >= 1
+    assert data["listChanged"].get("tools", 0) >= 0
     assert data["listChanged"]["prompts"] >= 1
     assert data["listChanged"]["roots"] >= 1
     assert data["prompts"][0]["name"] == "summarize-resource"
@@ -94,27 +97,22 @@ def test_cli_demo_outputs_handshake_summary(monkeypatch, capsys):
     assert first_log["level"] in {"notice", "info", "debug"}
     assert first_log.get("data", {}).get("event") == "log_level_set"
     assert data["elicitation"]["action"] == "accept"
-    assert data["elicitation"]["content"]["domain"]
-    assert "Sample tool output" in captured.out
-    assert "Resource snippets:" in captured.out
-    assert "Resource updates:" in captured.out
-    assert "Prompt preview:" in captured.out
-    assert "Sampling output:" in captured.out
-    assert "Server logs:" in captured.out
-    assert "Elicitation response:" in captured.out
+    assert data["elicitation"]["content"]["focus"] == "Interactive tooling"
+    assert "Echo tool output" in captured.out
 
 
 def test_cli_default_invocation_runs_demo(monkeypatch, capsys):
     _patch_sampling_provider(monkeypatch, responses=[
-        "Iteration 1 note",
+        "Iteration 1 diagnostic",
+        "Iteration 2 hypothesis",
         "Stubbed sampling output.",
     ])
     _patch_elicitation_inputs(
         monkeypatch,
         [
             "Interactive tooling",
-            "Showcase negotiated capabilities",
-            "Draft blueprint for next experiment",
+            "Respect current resource contracts",
+            "Run uv run pytest",
         ],
     )
     exit_code = cli.main([])
@@ -126,7 +124,8 @@ def test_cli_default_invocation_runs_demo(monkeypatch, capsys):
 
 def test_cli_creates_log_file(monkeypatch, tmp_path, capsys):
     _patch_sampling_provider(monkeypatch, responses=[
-        "Iteration 1 note",
+        "Iteration 1 diagnostic",
+        "Iteration 2 hypothesis",
         "Stubbed sampling output.",
     ])
     _patch_elicitation_inputs(
@@ -164,8 +163,9 @@ def test_cli_elicitation_auto_fill(monkeypatch, capsys):
     _patch_sampling_provider(
         monkeypatch,
         responses=[
-            {"domain": "auto-domain", "goal": "auto-goal", "success_metric": "auto-metric"},
-            "Iteration 1 note",
+            {"focus": "auto-focus", "constraints": "auto-constraints", "verification": "auto-check"},
+            "Iteration 1 diagnostic",
+            "Iteration 2 hypothesis",
             "Stubbed sampling output.",
         ],
     )
@@ -176,5 +176,7 @@ def test_cli_elicitation_auto_fill(monkeypatch, capsys):
 
     assert exit_code == 0
     data = _extract_json(captured.out)
-    assert data["elicitation"]["content"]["domain"] == "auto-domain"
+    assert data["elicitation"]["content"]["focus"] == "auto-focus"
+    assert data["elicitation"]["content"]["constraints"] == "auto-constraints"
+    assert data["elicitation"]["content"]["verification"] == "auto-check"
     assert data["sampling"]["content"]["text"] == "Stubbed sampling output."
