@@ -10,6 +10,9 @@ The CLI entrypoint delegates to `mcp_cli/cli.py`, which orchestrates an async cl
 - `uv run pytest` — execute the async test suite (pytest + pytest-asyncio) with default markers.
 - `uv run pytest tests/test_client.py::test_client_initializes_with_jsonrpc_handshake` — re-run a focused spec during TDD.
 
+## Logging & Diagnostics
+Each CLI invocation creates `logs/mcp-cli-<timestamp>.log` with DEBUG-level messages from the client, server, and transport orchestration. Override the destination by exporting `MCP_CLI_LOG_DIR=/tmp/mcp-cli-logs` (tests do this automatically). Tail the latest file while iterating (`tail -f logs/mcp-cli-*.log`) to trace JSON-RPC exchanges and transport state transitions.
+
 ## Coding Style & Naming Conventions
 Follow PEP 8 with 4-space indents, descriptive `snake_case` for functions, and `PascalCase` for protocol dataclasses. Prefer explicit `async def` workflows, type hints on public APIs, and docstrings that cite relevant MCP sections (for example, “Spec §Server Features”). Run `uv run ruff check .` before opening a PR; use `ruff format` to auto-format when necessary.
 

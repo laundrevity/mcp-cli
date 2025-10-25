@@ -4,10 +4,12 @@ import argparse
 import asyncio
 import contextlib
 import json
+import logging
 from typing import Iterable, Optional
 
 from .client import AsyncMCPClient
-from .models import ClientCapabilities, ClientInfo, ServerCapabilities, ServerInfo
+from .logging_utils import get_current_log_file, setup_logging
+from .models import ClientCapabilities, ClientInfo, HandshakeResult, ServerCapabilities, ServerInfo
 from .server import AsyncMCPServer
 from .transport import InMemoryTransport
 
@@ -39,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def run_demo(*, instructions: Optional[str] = None) -> int:
+    logger = logging.getLogger("mcp_cli.cli")
+    log_path = get_current_log_file()
+    if log_path is not None:
+        logger.debug("Demo run writing logs to %s", log_path)
+
     transport = InMemoryTransport()
 
     server = AsyncMCPServer(
@@ -72,7 +79,8 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
 
     try:
         await client.connect(transport.client_endpoint())
-        handshake = await client.initialize()
+        handshake: HandshakeResult = await client.initialize()
+        logger.info("Handshake complete; protocol=%s", handshake.protocol_version)
 
         payload = {
             "protocolVersion": handshake.protocol_version,
@@ -99,6 +107,11 @@ async def run_demo(*, instructions: Optional[str] = None) -> int:
 def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
+
+    log_path = setup_logging()
+    print(f"Debug log: {log_path}")
+    arg_list = list(argv) if argv is not None else None
+    logging.getLogger("mcp_cli.cli").debug("CLI invoked with args: %s", arg_list)
 
     if args.command == "demo":
         return asyncio.run(run_demo(instructions=args.instructions))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Optional
 
 from .models import (
@@ -28,8 +29,15 @@ class AsyncMCPClient:
         self.protocol_version = protocol_version
         self._endpoint: Optional[TransportEndpoint] = None
         self._request_counter = 0
+        self._logger = logging.getLogger("mcp_cli.client")
+        self._logger.debug(
+            "Client instantiated with protocol=%s capabilities=%s",
+            protocol_version,
+            capabilities.to_payload(),
+        )
 
     async def connect(self, endpoint: TransportEndpoint) -> None:
+        self._logger.debug("Connecting to transport endpoint.")
         self._endpoint = endpoint
 
     def _next_request_id(self) -> int:
@@ -52,9 +60,12 @@ class AsyncMCPClient:
             },
         }
 
+        self._logger.debug("Sending initialize request id=%s payload=%s", request_id, message)
         await self._endpoint.send(message)
 
         response = await self._endpoint.receive()
+        self._logger.debug("Received response for id=%s payload=%s", request_id, response)
+
         if not isinstance(response, dict) or response.get("jsonrpc") != "2.0":
             raise RuntimeError("Server returned an unexpected payload.")
         if response.get("id") != request_id:
@@ -66,9 +77,7 @@ class AsyncMCPClient:
         if not isinstance(result, dict):
             raise RuntimeError("Server response missing result payload.")
 
-        server_caps = ServerCapabilities.from_payload(
-            result.get("capabilities", {})
-        )
+        server_caps = ServerCapabilities.from_payload(result.get("capabilities", {}))
         server_info = ServerInfo.from_payload(result.get("serverInfo", {}))
 
         instructions = result.get("instructions")
@@ -78,12 +87,13 @@ class AsyncMCPClient:
             "jsonrpc": "2.0",
             "method": "notifications/initialized",
         }
+        self._logger.debug("Sending initialized notification payload=%s", initialized_payload)
         await self._endpoint.send(initialized_payload)
 
         # allow server to process notification before returning
         await asyncio.sleep(0)
 
-        return HandshakeResult(
+        handshake = HandshakeResult(
             client_capabilities=self.capabilities,
             server_capabilities=server_caps,
             protocol_version=protocol_version,
@@ -93,18 +103,22 @@ class AsyncMCPClient:
             instructions=instructions,
         )
 
+        self._logger.debug("Handshake result constructed: %s", handshake)
+        return handshake
+
     async def close(self) -> None:
         if self._endpoint is None:
             return
         try:
-            await self._endpoint.send(
-                {
-                    "jsonrpc": "2.0",
-                    "method": "notifications/shutdown",
-                }
-            )
+            shutdown_payload = {
+                "jsonrpc": "2.0",
+                "method": "notifications/shutdown",
+            }
+            self._logger.debug("Sending shutdown notification payload=%s", shutdown_payload)
+            await self._endpoint.send(shutdown_payload)
         except TransportClosed:
-            pass
+            self._logger.debug("Transport already closed during shutdown.")
         finally:
             await self._endpoint.close()
             self._endpoint = None
+            self._logger.debug("Transport endpoint released.")
