@@ -1,65 +1,126 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Any, Dict, Optional
+
+
+def _filter_none(mapping: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in mapping.items() if value is not None}
 
 
 @dataclass(frozen=True)
 class ServerCapabilities:
-    resources: bool
-    prompts: List[str] = field(default_factory=list)
-    tools: List[str] = field(default_factory=list)
-    sampling: bool = False
-    roots: bool = False
-    elicitation: bool = False
-    protocol_version: str = "2025-06-18"
+    logging: Optional[Dict[str, Any]] = None
+    prompts: Optional[Dict[str, Any]] = None
+    resources: Optional[Dict[str, Any]] = None
+    tools: Optional[Dict[str, Any]] = None
+    completions: Optional[Dict[str, Any]] = None
+    experimental: Optional[Dict[str, Any]] = None
 
-    def to_payload(self) -> Dict[str, object]:
-        return {
-            "resources": self.resources,
-            "prompts": list(self.prompts),
-            "tools": list(self.tools),
-            "sampling": self.sampling,
-            "roots": self.roots,
-            "elicitation": self.elicitation,
-            "protocol_version": self.protocol_version,
-        }
+    def to_payload(self) -> Dict[str, Any]:
+        return _filter_none(
+            {
+                "logging": self.logging,
+                "prompts": self.prompts,
+                "resources": self.resources,
+                "tools": self.tools,
+                "completions": self.completions,
+                "experimental": self.experimental,
+            }
+        )
 
     @classmethod
-    def from_payload(cls, payload: Dict[str, object]) -> "ServerCapabilities":
+    def from_payload(cls, payload: Dict[str, Any]) -> "ServerCapabilities":
         return cls(
-            resources=bool(payload.get("resources", False)),
-            prompts=list(payload.get("prompts", [])),
-            tools=list(payload.get("tools", [])),
-            sampling=bool(payload.get("sampling", False)),
-            roots=bool(payload.get("roots", False)),
-            elicitation=bool(payload.get("elicitation", False)),
-            protocol_version=str(payload.get("protocol_version", "2025-06-18")),
+            logging=payload.get("logging"),
+            prompts=payload.get("prompts"),
+            resources=payload.get("resources"),
+            tools=payload.get("tools"),
+            completions=payload.get("completions"),
+            experimental=payload.get("experimental"),
         )
 
 
 @dataclass(frozen=True)
 class ClientCapabilities:
-    sampling: bool = False
-    roots: bool = False
-    elicitation: bool = False
-    protocol_version: str = "2025-06-18"
+    sampling: Optional[Dict[str, Any]] = None
+    roots: Optional[Dict[str, Any]] = None
+    elicitation: Optional[Dict[str, Any]] = None
+    experimental: Optional[Dict[str, Any]] = None
 
-    def to_payload(self) -> Dict[str, object]:
-        return {
-            "sampling": self.sampling,
-            "roots": self.roots,
-            "elicitation": self.elicitation,
-            "protocol_version": self.protocol_version,
-        }
+    def to_payload(self) -> Dict[str, Any]:
+        return _filter_none(
+            {
+                "sampling": self.sampling,
+                "roots": self.roots,
+                "elicitation": self.elicitation,
+                "experimental": self.experimental,
+            }
+        )
 
     @classmethod
-    def from_payload(cls, payload: Dict[str, object]) -> "ClientCapabilities":
+    def from_payload(cls, payload: Dict[str, Any]) -> "ClientCapabilities":
         return cls(
-            sampling=bool(payload.get("sampling", False)),
-            roots=bool(payload.get("roots", False)),
-            elicitation=bool(payload.get("elicitation", False)),
-            protocol_version=str(payload.get("protocol_version", "2025-06-18")),
+            sampling=payload.get("sampling"),
+            roots=payload.get("roots"),
+            elicitation=payload.get("elicitation"),
+            experimental=payload.get("experimental"),
+        )
+
+
+@dataclass(frozen=True)
+class ServerInfo:
+    name: str
+    version: str
+    title: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_payload(self) -> Dict[str, Any]:
+        payload = {
+            "name": self.name,
+            "version": self.version,
+        }
+        if self.title is not None:
+            payload["title"] = self.title
+        if self.metadata:
+            payload["metadata"] = self.metadata
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload: Dict[str, Any]) -> "ServerInfo":
+        return cls(
+            name=str(payload.get("name", "")),
+            version=str(payload.get("version", "")),
+            title=payload.get("title"),
+            metadata=dict(payload.get("metadata", {})),
+        )
+
+
+@dataclass(frozen=True)
+class ClientInfo:
+    name: str
+    version: str
+    title: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_payload(self) -> Dict[str, Any]:
+        payload = {
+            "name": self.name,
+            "version": self.version,
+        }
+        if self.title is not None:
+            payload["title"] = self.title
+        if self.metadata:
+            payload["metadata"] = self.metadata
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload: Dict[str, Any]) -> "ClientInfo":
+        return cls(
+            name=str(payload.get("name", "")),
+            version=str(payload.get("version", "")),
+            title=payload.get("title"),
+            metadata=dict(payload.get("metadata", {})),
         )
 
 
@@ -67,3 +128,8 @@ class ClientCapabilities:
 class HandshakeResult:
     client_capabilities: ClientCapabilities
     server_capabilities: ServerCapabilities
+    protocol_version: str
+    request_id: int
+    server_info: ServerInfo
+    client_info: ClientInfo
+    instructions: Optional[str] = None
